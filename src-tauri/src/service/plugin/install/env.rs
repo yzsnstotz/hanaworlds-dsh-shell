@@ -9,14 +9,19 @@ use tauri::AppHandle;
 use crate::config;
 use crate::service::cli;
 
-pub(crate) fn pin_recorded_pnpm_store(
+pub(crate) fn pin_profile_pnpm_store(
     envs: &mut HashMap<String, String>,
-    store_dir: Option<String>,
+    profile_dir: &Path,
+    recorded_store_dir: Option<String>,
 ) {
-    if let Some(store_dir) = store_dir {
-        envs.insert("npm_config_store_dir".to_string(), store_dir.clone());
-        envs.insert("pnpm_config_store_dir".to_string(), store_dir);
-    }
+    let store_dir = recorded_store_dir.unwrap_or_else(|| {
+        profile_dir
+            .join(".pnpm-store")
+            .to_string_lossy()
+            .into_owned()
+    });
+    envs.insert("npm_config_store_dir".to_string(), store_dir.clone());
+    envs.insert("pnpm_config_store_dir".to_string(), store_dir);
 }
 
 /// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色、
@@ -97,21 +102,13 @@ pub(crate) fn build_plugin_envs(
         );
     }
 
-    // 档案 node_modules 是用哪份 store 装的，是既有事实：pnpm 只在「自己解析出的 store」
-    // 与 `node_modules/.modules.yaml` 记录的一致时才继续，否则直接
-    // `ERR_PNPM_UNEXPECTED_STORE` 退出（该错误与插件本身无关，用户看到的是「插件安装失败」）。
-    // 用户的 pnpm 用户级/全局配置（如 `store-dir`）或环境变量可能把 store 指到别处
-    // （典型场景：用户在另一个分区的工程里跑过 pnpm，pnpm 就把那份 store 写进了全局配置），
-    // 此时档案安装必然失败且无法自愈。这里显式下传档案记录的 store：
-    // pnpm 的优先级是 CLI > 环境变量 > 项目 .npmrc > 用户/全局配置，
-    // 因此该值压过用户配置；传的是去掉版本段的基目录，由 pnpm 追加自身主版本的
-    // 版本段（主版本与档案一致时即等于 `.modules.yaml` 里的记录，见
-    // [`super::pnpm::profile_store_base_dir`]）。
-    // 全新档案（没有 node_modules）不注入：让 pnpm 按用户配置自行决定并写回记录。
-    if let Some(store_dir) = super::pnpm::profile_store_base_dir(app_handle) {
-        log::info!("pinning plugin install pnpm store to the profile record: {store_dir}");
-        pin_recorded_pnpm_store(&mut envs, Some(store_dir));
-    }
+    // 既有档案沿用 .modules.yaml 的 store；全新档案固定在自身目录，
+    // 覆盖外部 PNPM_HOME/store-dir，避免首装依赖写入宿主 store。
+    pin_profile_pnpm_store(
+        &mut envs,
+        &super::profile_dir(app_handle),
+        super::pnpm::profile_store_base_dir(app_handle),
+    );
 
     let mut paths = vec![bin_dir];
     if let Some(node_dir) = node_abs.parent() {
@@ -307,8 +304,9 @@ mod tests {
             "PNPM_HOME".to_string(),
             "/foreign/user/Library/pnpm".to_string(),
         )]);
-        pin_recorded_pnpm_store(
+        pin_profile_pnpm_store(
             &mut envs,
+            Path::new("/isolated/home/.hanaworlds-dsh/profiles/tauri"),
             Some("/isolated/home/Library/pnpm/store".to_string()),
         );
         assert_eq!(
@@ -319,6 +317,33 @@ mod tests {
             envs.get("pnpm_config_store_dir").map(String::as_str),
             Some("/isolated/home/Library/pnpm/store")
         );
+    }
+
+    #[test]
+    fn fresh_profile_pins_store_inside_its_isolated_directory_despite_foreign_pnpm_settings() {
+        let root = std::env::temp_dir().join(format!(
+            "hanaworlds-fresh-pnpm-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile = root.join("home/.hanaworlds-dsh/profiles/tauri");
+        let foreign = root.join("foreign-pnpm");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        let foreign_store = foreign.join("store").to_string_lossy().into_owned();
+        let mut envs = HashMap::from([
+            ("PNPM_HOME".to_string(), foreign.to_string_lossy().into_owned()),
+            ("npm_config_store_dir".to_string(), foreign_store.clone()),
+            ("pnpm_config_store_dir".to_string(), foreign_store),
+        ]);
+        pin_profile_pnpm_store(&mut envs, &profile, None);
+        let expected = profile.join(".pnpm-store").to_string_lossy().into_owned();
+        assert_eq!(envs.get("npm_config_store_dir"), Some(&expected));
+        assert_eq!(envs.get("pnpm_config_store_dir"), Some(&expected));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
