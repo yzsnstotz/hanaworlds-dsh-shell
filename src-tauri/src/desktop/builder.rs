@@ -1069,6 +1069,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::refresh_plugin_updates,
         crate::bridge::update_dsh_plugin,
         crate::bridge::remove_dsh_plugin,
+        crate::bridge::reconcile_removed_plugin_residue,
         crate::bridge::disable_dsh_plugin,
         crate::bridge::enable_dsh_plugin,
         crate::bridge::snapshot_plugin,

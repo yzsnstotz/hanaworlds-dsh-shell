@@ -208,6 +208,8 @@ rem Runtime override: this file is read through the console code page, so a bake
 rem path containing non-ASCII (e.g. user name) is corrupted on parse. The desktop
 rem app passes the real path in DSH_PNPM_BIN, which arrives as UTF-16 and is safe.
 if exist "%DSH_PNPM_BIN%" set "PNPM_BIN=%DSH_PNPM_BIN%"
+rem Shell private bundle choice survives Core scrubbing DSH_* for service pnpm.
+if exist "%HANAWORLDS_BUNDLED_PNPM_BIN%" set "PNPM_BIN=%HANAWORLDS_BUNDLED_PNPM_BIN%"
 rem Use bundled MinGit only when system Git lacks its HTTPS transport helper.
 set "SYSTEM_GIT_WORKS="
 for /f "delims=" %%g in ('git --exec-path 2^>nul') do if exist "%%g\git-remote-https.exe" set "SYSTEM_GIT_WORKS=1"
@@ -218,6 +220,7 @@ rem falling back to the user's only when the bundled one is missing.
 if "%DSH_PREFER_BUNDLED_PNPM%"=="1" (
   if exist "%PNPM_BIN%" goto :after_user
 )
+if exist "%HANAWORLDS_BUNDLED_PNPM_BIN%" goto :after_user
 
 rem Re-entry guard: DSH_PNPM, or the first pnpm found on PATH, may itself be a shim
 rem that resolves back through PATH into this file; forwarding twice would exec the
@@ -312,6 +315,7 @@ $pnpmBin = '{pnpm_bin}'
 # Runtime override: the baked literal may be non-ASCII; the desktop app passes the
 # real path in DSH_PNPM_BIN (see the cmd shim note).
 if ($env:DSH_PNPM_BIN -and (Test-Path -LiteralPath $env:DSH_PNPM_BIN -PathType Leaf)) {{ $pnpmBin = $env:DSH_PNPM_BIN }}
+if ($env:HANAWORLDS_BUNDLED_PNPM_BIN -and (Test-Path -LiteralPath $env:HANAWORLDS_BUNDLED_PNPM_BIN -PathType Leaf)) {{ $pnpmBin = $env:HANAWORLDS_BUNDLED_PNPM_BIN }}
 # Use bundled MinGit only when system Git lacks its HTTPS transport helper.
 $systemGitWorks = $false
 try {{
@@ -322,7 +326,7 @@ if (-not $systemGitWorks -and $gitDir -and (Test-Path -LiteralPath (Join-Path $g
     $env:PATH = $gitDir + ';' + $env:PATH
 }}
 
-$useBundled = $env:DSH_PREFER_BUNDLED_PNPM -eq '1' -and (Test-Path -LiteralPath $pnpmBin -PathType Leaf)
+$useBundled = ($env:DSH_PREFER_BUNDLED_PNPM -eq '1' -or ($env:HANAWORLDS_BUNDLED_PNPM_BIN -and (Test-Path -LiteralPath $env:HANAWORLDS_BUNDLED_PNPM_BIN -PathType Leaf))) -and (Test-Path -LiteralPath $pnpmBin -PathType Leaf)
 
 # Re-entry guard: DSH_PNPM, or the first pnpm found on PATH, may itself be a shim
 # that resolves back through PATH into this file; forwarding twice would exec the
@@ -379,9 +383,13 @@ NODE_DIR='{node_dir}'
 PNPM_BIN='{pnpm_bin}'
 # Runtime override: the desktop app passes the real bundled pnpm path here.
 if [ -n "$DSH_PNPM_BIN" ] && [ -f "$DSH_PNPM_BIN" ]; then PNPM_BIN="$DSH_PNPM_BIN"; fi
+if [ -n "$HANAWORLDS_BUNDLED_PNPM_BIN" ] && [ -f "$HANAWORLDS_BUNDLED_PNPM_BIN" ]; then PNPM_BIN="$HANAWORLDS_BUNDLED_PNPM_BIN"; fi
 
 USE_BUNDLED=
 if [ "$DSH_PREFER_BUNDLED_PNPM" = "1" ] && [ -f "$PNPM_BIN" ]; then
+  USE_BUNDLED=1
+fi
+if [ -n "$HANAWORLDS_BUNDLED_PNPM_BIN" ] && [ -f "$HANAWORLDS_BUNDLED_PNPM_BIN" ]; then
   USE_BUNDLED=1
 fi
 
@@ -846,6 +854,42 @@ mod tests {
         assert!(output.status.success());
         assert!(stdout.contains("BUNDLED"));
         assert!(!stdout.contains("SELECTED"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_sh_shim_keeps_shell_bundle_choice_after_core_scrubs_dsh_env() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("pnpm-sh-core-scrub");
+        let app_dir = dir.join("app");
+        let pnpm_bin = app_dir.join("dependencies/pnpm/bin/pnpm.cjs");
+        std::fs::create_dir_all(pnpm_bin.parent().unwrap()).unwrap();
+        std::fs::write(&pnpm_bin, "fixture").unwrap();
+        let user_dir = dir.join("user-bin");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let user_pnpm = user_dir.join("pnpm");
+        std::fs::write(&user_pnpm, "#!/bin/sh\necho USER_PNPM\n").unwrap();
+        let node = dir.join("node");
+        std::fs::write(&node, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo v22.22.0; else echo BUNDLED_PNPM; fi\n").unwrap();
+        let shim = dir.join("pnpm");
+        std::fs::write(&shim, build_pnpm_sh_shim(&shim_paths_for(&app_dir))).unwrap();
+        for path in [&user_pnpm, &node, &shim] {
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        let output = std::process::Command::new(&shim)
+            .env("PATH", format!("{}:{}:/usr/bin:/bin", dir.display(), user_dir.display()))
+            .env("HANAWORLDS_BUNDLED_PNPM_BIN", &pnpm_bin)
+            .env_remove("DSH_PREFER_BUNDLED_PNPM")
+            .env_remove("DSH_PNPM")
+            .env_remove("DSH_PNPM_BIN")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "BUNDLED_PNPM");
         let _ = std::fs::remove_dir_all(dir);
     }
 

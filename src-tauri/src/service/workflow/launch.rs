@@ -582,6 +582,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 最佳努力：失败只告警，不阻断启动。
     if crate::service::plugin::harness_prefer_bundled_pnpm(&app_handle) {
         envs.insert("DSH_PREFER_BUNDLED_PNPM".to_string(), "1".to_string());
+        envs.insert(
+            "HANAWORLDS_BUNDLED_PNPM_BIN".to_string(),
+            config::get_pnpm_binary_path(&app_handle)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    } else {
+        envs.insert("HANAWORLDS_BUNDLED_PNPM_BIN".to_string(), String::new());
     }
 
     // 内嵌 WebView 是 `tauri.localhost` 下的跨源沙箱 iframe，`SameSite=Strict` 的

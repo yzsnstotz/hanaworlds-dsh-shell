@@ -139,6 +139,7 @@ pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
             );
         }
     }
+    super::super::cleanup_after_uninstall(app_handle, id)?;
     // 卸载级联清理单插件快照（best-effort）：插件已移除，快照随之失效
     // （issue #303：卸载后删除快照，避免残留孤儿快照占用存储）。
     super::super::snapshot::delete_best_effort(app_handle, id);

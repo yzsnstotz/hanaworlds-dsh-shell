@@ -187,6 +187,18 @@ pub async fn remove_dsh_plugin(app_handle: AppHandle, id: String) -> Result<(), 
     Ok(())
 }
 
+/// Native Core Plugins UI completed a remove attempt. Reconcile only
+/// fully absent packages whose Core anchor belongs to this Shell profile.
+#[tauri::command]
+pub fn reconcile_removed_plugin_residue(app_handle: AppHandle) -> Result<Vec<String>, String> {
+    let removed = plugin::reconcile_removed_plugin_residue(&app_handle)?;
+    if !removed.is_empty() {
+        log::info!("reconciled native plugin uninstall residue: {removed:?}");
+        plugin::watch::force_emit(&app_handle);
+    }
+    Ok(removed)
+}
+
 /// 上报插件运行期异常（内嵌页面 / dsh-tauri 桥调用），记录后立即推送新列表，
 /// 并推送 `plugin-recovery-required` 让前端弹出「卸除此插件并继续检测」修复界面。
 #[tauri::command]

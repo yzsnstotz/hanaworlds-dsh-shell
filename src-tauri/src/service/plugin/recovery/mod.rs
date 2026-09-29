@@ -193,6 +193,7 @@ pub fn uninstall(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     if let Err(e) = errors::clear(app_handle, id) {
         log::warn!("failed to clear plugin error for {id} during recovery: {e}");
     }
+    super::cleanup_after_uninstall(app_handle, id)?;
     Ok(())
 }
 

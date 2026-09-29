@@ -133,7 +133,13 @@ async fn user_pnpm_major_version_bounded(
         return Ok(None);
     };
     let node = config::get_node_binary_path(app_handle);
-    let mut command = pnpm_probe_command(&pnpm, Some(&node), Some(&cli::get_bin_dir(app_handle)));
+    let profile = profile_dir(app_handle);
+    let mut command = pnpm_probe_command_in_profile(
+        &pnpm,
+        Some(&node),
+        Some(&cli::get_bin_dir(app_handle)),
+        &profile,
+    );
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -545,7 +551,20 @@ fn probe_timeout_or_fallback(pnpm: &Path, reason: String) -> Option<u32> {
 pub(crate) fn user_pnpm_major_version(app_handle: &AppHandle) -> Option<u32> {
     let pnpm = cli::find_user_pnpm(app_handle)?;
     let node = config::get_node_binary_path(app_handle);
-    pnpm_major_version_at_with_node(&pnpm, Some(&node))
+    let output =
+        match pnpm_probe_command_in_profile(&pnpm, Some(&node), None, &profile_dir(app_handle))
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                log::warn!(
+                    "pnpm version probe failed to spawn {}: {error}",
+                    pnpm.display()
+                );
+                return None;
+            }
+        };
+    parse_pnpm_major_output(&pnpm, &output)
 }
 
 /// 探测精确 pnpm 可执行路径的主版本，供直接执行路径校验实际将运行的文件。
@@ -607,6 +626,17 @@ fn pnpm_probe_command(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    command
+}
+
+fn pnpm_probe_command_in_profile(
+    pnpm: &Path,
+    node: Option<&Path>,
+    bin_dir: Option<&Path>,
+    profile: &Path,
+) -> std::process::Command {
+    let mut command = pnpm_probe_command(pnpm, node, bin_dir);
+    command.current_dir(profile);
     command
 }
 
@@ -805,6 +835,37 @@ pub(crate) fn harness_prefer_bundled_pnpm(app_handle: &AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_probe_uses_same_cwd_as_profile_package_operations() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "hanaworlds-pnpm-cwd-{}-{nonce}",
+            std::process::id()
+        ));
+        let profile = root.join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let pnpm = root.join("contextual-pnpm");
+        std::fs::write(&pnpm, "#!/bin/sh\ncase \"$(/bin/pwd -P)\" in */profile) printf '10.23.0\\n' ;; *) printf '11.7.0\\n' ;; esac\n").unwrap();
+        let mut permissions = std::fs::metadata(&pnpm).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&pnpm, permissions).unwrap();
+
+        let output = pnpm_probe_command_in_profile(&pnpm, None, None, &profile)
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "10.23.0\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn pnpm_probe_wait_and_output_failures_fall_back_to_bundled() {

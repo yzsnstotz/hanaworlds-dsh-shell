@@ -42,6 +42,8 @@ const ALLOWED_INVOKE_CMDS = new Set([
   // dsh-tauri 客户端接管官方登录：账号流进入 waiting-browser 时把授权地址交给系统浏览器
   // （命令自身只放行 http(s)，见 bridge/system_os.rs）。
   'open_external_url',
+  // Native Core Plugins UI remove completion: bounded cleanup of Shell-owned residue.
+  'reconcile_removed_plugin_residue',
   'get_pet_status',
   'get_pet_overlay_supported',
   'get_force_xwayland',

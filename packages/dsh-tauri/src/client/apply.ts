@@ -13,6 +13,7 @@
 import type { ClientContext } from './types'
 import { accountSignInFeature } from './register/account'
 import { navigationFeature } from './register/navigation'
+import { pluginUninstallReconcileFeature } from './register/plugin-uninstall'
 import { shortcutsFeature } from './register/shortcuts'
 import { sidebarFeature } from './register/sidebar'
 import { sidebarTweaksFeature } from './register/sidebar-tweaks'
@@ -27,6 +28,7 @@ const SIDEBAR_TWEAKS_EFFECT = 'dsh-tauri: sidebar tweaks (hide collapse toggle, 
 const STYLE_EFFECT = 'dsh-tauri: style (sidebar background)'
 const ACCOUNT_SIGN_IN_EFFECT = 'dsh-tauri: account sign-in (auto-open the authorize url)'
 const SHORTCUTS_EFFECT = 'dsh-tauri: shortcuts (catalog report + edit commands)'
+const PLUGIN_UNINSTALL_EFFECT = 'dsh-tauri: reconcile native plugin uninstall residue'
 /** 插件体：注册侧边栏桥、导航命令、缩放快捷键、账号登录接管与侧边栏 UI 微调。 */
 export function apply(ctx: ClientContext): void {
   // issue #573：独立浏览器没有桌面宿主，保留原生侧栏控件与缩放快捷键。
@@ -40,4 +42,5 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(sidebarTweaksFeature, SIDEBAR_TWEAKS_EFFECT)
   ctx.effect(accountSignInFeature, ACCOUNT_SIGN_IN_EFFECT)
   ctx.effect(shortcutsFeature, SHORTCUTS_EFFECT)
+  ctx.effect(pluginUninstallReconcileFeature, PLUGIN_UNINSTALL_EFFECT)
 }

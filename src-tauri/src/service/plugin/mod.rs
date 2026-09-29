@@ -46,10 +46,13 @@ pub mod recovery;
 mod safe;
 pub mod snapshot;
 pub mod update;
+mod uninstall_cleanup;
 pub mod verify;
 pub mod watch;
 
 pub(crate) use crate::service::profile::ensure_profile_pnpm_policy;
+pub(crate) use uninstall_cleanup::cleanup_after_uninstall;
+pub(crate) use uninstall_cleanup::reconcile_removed_plugin_residue;
 pub use cancel::cancel;
 pub(crate) use cancel::terminate_active_installs_blocking;
 pub(crate) use install::harness_prefer_bundled_pnpm;

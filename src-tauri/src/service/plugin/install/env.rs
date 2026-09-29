@@ -100,6 +100,18 @@ pub(crate) fn build_plugin_envs(
             "DSH_PNPM_BIN".to_string(),
             bundled_pnpm.to_string_lossy().into_owned(),
         );
+        // Core scrubs DSH_* before spawning its service-mode pnpm process.
+        // This Shell-owned path survives that boundary and keeps existing
+        // profile stores on the selected bundled pnpm major.
+        if prefer_bundled_pnpm {
+            envs.insert(
+                "HANAWORLDS_BUNDLED_PNPM_BIN".to_string(),
+                bundled_pnpm.to_string_lossy().into_owned(),
+            );
+        }
+    }
+    if !prefer_bundled_pnpm {
+        envs.insert("HANAWORLDS_BUNDLED_PNPM_BIN".to_string(), String::new());
     }
 
     // 既有档案沿用 .modules.yaml 的 store；全新档案固定在自身目录，
