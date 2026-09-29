@@ -53,6 +53,7 @@ pub(crate) use crate::service::profile::ensure_profile_pnpm_policy;
 pub use cancel::cancel;
 pub(crate) use cancel::terminate_active_installs_blocking;
 pub(crate) use install::harness_prefer_bundled_pnpm;
+pub(crate) use install::{pin_recorded_pnpm_store, profile_store_base_dir};
 pub(crate) use install::uninstall_deprecated_plugins;
 pub use install::{
     allow_policy_versions, allow_version_exemptions, install, remove, update, IncompatibleVersion,

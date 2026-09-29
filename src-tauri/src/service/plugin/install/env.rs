@@ -9,6 +9,16 @@ use tauri::AppHandle;
 use crate::config;
 use crate::service::cli;
 
+pub(crate) fn pin_recorded_pnpm_store(
+    envs: &mut HashMap<String, String>,
+    store_dir: Option<String>,
+) {
+    if let Some(store_dir) = store_dir {
+        envs.insert("npm_config_store_dir".to_string(), store_dir.clone());
+        envs.insert("pnpm_config_store_dir".to_string(), store_dir);
+    }
+}
+
 /// 构建 `dsh plugin` 子进程的环境变量：隔离 $DSH_HOME、关闭遥测与颜色、
 /// 注入预检解析出的 node 路径（`DSH_NODE`，shim 优先采用，见 shim.rs）、
 /// PATH 前置 shim、node 与桌面端自动配置的 Git 目录；用户 pnpm 过旧时强制
@@ -100,15 +110,7 @@ pub(crate) fn build_plugin_envs(
     // 全新档案（没有 node_modules）不注入：让 pnpm 按用户配置自行决定并写回记录。
     if let Some(store_dir) = super::pnpm::profile_store_base_dir(app_handle) {
         log::info!("pinning plugin install pnpm store to the profile record: {store_dir}");
-        // pnpm 11 起不再读取 `npm_config_*`：`config/reader` 的 `parseEnvVars` 只认
-        // `pnpm_config_` / `PNPM_CONFIG_` 前缀，其余按键静默 `continue`（见
-        // pnpm 11.0.0 release notes：`npm_config_registry` → `pnpm_config_registry`）。
-        // 只设 `npm_config_store_dir` 对捆绑版 pnpm 11 是空操作 —— 档案记录的 store
-        // 根本没下传，pnpm 用自己解析出的 store 与 `.modules.yaml` 比对失败，仍报
-        // `ERR_PNPM_UNEXPECTED_STORE`。两个前缀同设：pnpm 10 认 `npm_config_*`，
-        // pnpm 11 认 `pnpm_config_*`，值相同因此不冲突。
-        envs.insert("npm_config_store_dir".to_string(), store_dir.clone());
-        envs.insert("pnpm_config_store_dir".to_string(), store_dir);
+        pin_recorded_pnpm_store(&mut envs, Some(store_dir));
     }
 
     let mut paths = vec![bin_dir];
@@ -298,6 +300,26 @@ fn empty_git_config_file() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_profile_store_overrides_foreign_pnpm_home_for_both_pnpm_config_prefixes() {
+        let mut envs = HashMap::from([(
+            "PNPM_HOME".to_string(),
+            "/foreign/user/Library/pnpm".to_string(),
+        )]);
+        pin_recorded_pnpm_store(
+            &mut envs,
+            Some("/isolated/home/Library/pnpm/store".to_string()),
+        );
+        assert_eq!(
+            envs.get("npm_config_store_dir").map(String::as_str),
+            Some("/isolated/home/Library/pnpm/store")
+        );
+        assert_eq!(
+            envs.get("pnpm_config_store_dir").map(String::as_str),
+            Some("/isolated/home/Library/pnpm/store")
+        );
+    }
 
     #[test]
     fn rewrite_rule_targets_ssh_github_detects_common_rewrites() {
