@@ -6,7 +6,8 @@ use std::fs;
 use tauri::AppHandle;
 
 use super::path::{get_bin_dir, get_shim_path, path_registered, register_path, unregister_path};
-use super::shim::{user_dsh_preserved, write_shims};
+use super::shim::{is_generated_shim, user_dsh_preserved, write_shims};
+use std::path::Path;
 
 /// 命令行集成状态（设置页展示）
 #[derive(Debug, Clone, Serialize)]
@@ -92,20 +93,96 @@ pub fn remove(app_handle: &AppHandle) -> Result<CliLinkStatus, String> {
     #[cfg(windows)]
     {
         use super::shim::{PNPM_SHIM_CMD_NAME, PNPM_SHIM_PS1_NAME, SHIM_CMD_NAME, SHIM_PS1_NAME};
-        let _ = fs::remove_file(bin_dir.join(SHIM_CMD_NAME));
-        let _ = fs::remove_file(bin_dir.join(SHIM_PS1_NAME));
-        let _ = fs::remove_file(bin_dir.join(PNPM_SHIM_CMD_NAME));
-        let _ = fs::remove_file(bin_dir.join(PNPM_SHIM_PS1_NAME));
+        for name in [
+            SHIM_CMD_NAME,
+            SHIM_PS1_NAME,
+            PNPM_SHIM_CMD_NAME,
+            PNPM_SHIM_PS1_NAME,
+        ] {
+            remove_owned_shim(&bin_dir.join(name))?;
+        }
     }
     #[cfg(not(windows))]
     {
         use super::shim::{PNPM_SHIM_SH_NAME, SHIM_SH_NAME};
-        let _ = fs::remove_file(bin_dir.join(SHIM_SH_NAME));
-        let _ = fs::remove_file(bin_dir.join(PNPM_SHIM_SH_NAME));
+        for name in [SHIM_SH_NAME, PNPM_SHIM_SH_NAME] {
+            remove_owned_shim(&bin_dir.join(name))?;
+        }
     }
 
     unregister_path(app_handle)?;
 
     log::info!("dsh/pnpm CLI links removed");
     Ok(get_status(app_handle))
+}
+
+/// Only a regular file carrying this Shell's marker belongs to this app.
+/// In particular, never follow or delete a user's symlink or ordinary DSH shim.
+fn remove_owned_shim(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("SHIM_STAT_FAILED: {}: {error}", path.display())),
+    };
+    if metadata.file_type().is_file() && is_generated_shim(path) {
+        fs::remove_file(path)
+            .map_err(|error| format!("SHIM_REMOVE_FAILED: {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_removes_only_hanaworlds_regular_shims() {
+        let root = std::env::temp_dir().join(format!(
+            "hanaworlds-cli-owner-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ordinary_bin = root.join(".local/bin");
+        let own_bin = root.join(".local/share/hanaworlds-dsh/bin");
+        fs::create_dir_all(&ordinary_bin).unwrap();
+        fs::create_dir_all(&own_bin).unwrap();
+        let ordinary = ordinary_bin.join("dsh");
+        let ordinary_pnpm = ordinary_bin.join("pnpm");
+        let own = own_bin.join("dsh");
+        let old_dsh_in_own_dir = own_bin.join("pnpm");
+        fs::write(
+            &ordinary,
+            b"#!/bin/sh\n# DeepSeek Harness Desktop - dsh command shim (generated)\n",
+        )
+        .unwrap();
+        fs::write(
+            &ordinary_pnpm,
+            b"#!/bin/sh\n# DeepSeek Harness Desktop - pnpm command shim (generated)\n",
+        )
+        .unwrap();
+        fs::write(
+            &own,
+            b"#!/bin/sh\n# HanaWorlds DSH Shell - dsh command shim (generated)\n",
+        )
+        .unwrap();
+        fs::write(
+            &old_dsh_in_own_dir,
+            b"#!/bin/sh\n# DeepSeek Harness Desktop - pnpm command shim (generated)\n",
+        )
+        .unwrap();
+        let before = [
+            fs::read(&ordinary).unwrap(),
+            fs::read(&ordinary_pnpm).unwrap(),
+        ];
+        remove_owned_shim(&own).unwrap();
+        remove_owned_shim(&old_dsh_in_own_dir).unwrap();
+        assert!(!own.exists());
+        assert!(old_dsh_in_own_dir.exists());
+        assert_eq!(fs::read(&ordinary).unwrap(), before[0]);
+        assert_eq!(fs::read(&ordinary_pnpm).unwrap(), before[1]);
+        let _ = fs::remove_dir_all(root);
+    }
 }

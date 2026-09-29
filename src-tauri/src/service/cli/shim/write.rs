@@ -23,7 +23,8 @@ use super::{PNPM_SHIM_SH_NAME, SHIM_SH_NAME};
 
 /// 生成的 shim 自带的可识别标记（首行注释）。用于区分"本应用生成的 shim"
 /// 与"用户自行放置的同名文件"。读文件只读该标记行，避免误删用户自有文件。
-const GENERATED_MARKER: &str = "DeepSeek Harness Desktop - ";
+const GENERATED_MARKER: &str = "HanaWorlds DSH Shell - ";
+const ORDINARY_DSH_MARKER: &str = "DeepSeek Harness Desktop - ";
 
 /// 目标路径已存在且不是本应用生成的 shim（即用户手动放置的 `dsh`/`pnpm`）。
 ///
@@ -52,14 +53,24 @@ fn is_dangling_symlink(path: &Path) -> bool {
 /// 前者应被排除（它转发到捆绑 dsh，不构成用户本地核心），后者应被识别。
 ///
 /// 标记只在前两行匹配：所有生成的 shim 都在头部第一行（cmd 是 @echo off
-/// 后的第二行）写 #/rem DeepSeek Harness Desktop - ...；用户文件即使正文
+/// 后的第二行）写 #/rem HanaWorlds DSH Shell - ...；用户文件即使正文
 /// 提到同样的短语（如 README 引用）也不应被误判为本应用 shim。
 pub fn is_generated_shim(path: &Path) -> bool {
+    header_contains_marker(path, GENERATED_MARKER)
+}
+
+/// Discovery must not mistake an ordinary DSH desktop shim for a standalone
+/// user pnpm executable. This does not grant ownership to overwrite or remove it.
+pub fn is_ordinary_dsh_shim(path: &Path) -> bool {
+    header_contains_marker(path, ORDINARY_DSH_MARKER)
+}
+
+fn header_contains_marker(path: &Path, marker: &str) -> bool {
     match std::fs::read(path) {
         Ok(bytes) => String::from_utf8_lossy(&bytes)
             .lines()
             .take(2)
-            .any(|line| line.contains(GENERATED_MARKER)),
+            .any(|line| line.contains(marker)),
         Err(_) => false,
     }
 }
@@ -270,6 +281,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn first_install_and_repair_leave_ordinary_dsh_shims_unchanged() {
+        let home = temp_dir("isolated-home");
+        let ordinary_bin = home.join(".local/bin");
+        let own_bin = home.join(".local/share/hanaworlds-dsh/bin");
+        std::fs::create_dir_all(&ordinary_bin).unwrap();
+        std::fs::create_dir_all(&own_bin).unwrap();
+        let ordinary_dsh = ordinary_bin.join("dsh");
+        let ordinary_pnpm = ordinary_bin.join("pnpm");
+        std::fs::write(
+            &ordinary_dsh,
+            b"#!/bin/sh\n# DeepSeek Harness Desktop - dsh command shim (generated)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &ordinary_pnpm,
+            b"#!/bin/sh\n# DeepSeek Harness Desktop - pnpm command shim (generated)\n",
+        )
+        .unwrap();
+        let before = [
+            std::fs::read(&ordinary_dsh).unwrap(),
+            std::fs::read(&ordinary_pnpm).unwrap(),
+        ];
+        let paths = sample_shim_paths();
+        let own_dsh = build_sh_shim(&paths, &sample_dsh_home());
+        let own_pnpm = build_pnpm_sh_shim(&paths);
+        for _ in 0..2 {
+            write_shim_file(&own_bin.join("dsh"), &own_dsh).unwrap();
+            write_shim_file(&own_bin.join("pnpm"), &own_pnpm).unwrap();
+        }
+        assert!(is_generated_shim(&own_bin.join("dsh")));
+        assert!(is_generated_shim(&own_bin.join("pnpm")));
+        assert!(!is_generated_shim(&ordinary_dsh));
+        assert!(!is_generated_shim(&ordinary_pnpm));
+        assert_eq!(std::fs::read(&ordinary_dsh).unwrap(), before[0]);
+        assert_eq!(std::fs::read(&ordinary_pnpm).unwrap(), before[1]);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     // ------------------------------------------------------------------
     // write_shim_file 目标文件处理（悬空符号链接 / 用户文件保留 / 生成文件覆盖）
     // ------------------------------------------------------------------
@@ -373,21 +424,13 @@ mod tests {
     fn write_shim_file_overwrites_generated_shim() {
         let dir = temp_dir("overwrite");
         let target = dir.join("dsh");
-        std::fs::write(
-            &target,
-            "#!/bin/sh\n# DeepSeek Harness Desktop - old shim\n",
-        )
-        .unwrap();
+        std::fs::write(&target, "#!/bin/sh\n# HanaWorlds DSH Shell - old shim\n").unwrap();
 
-        write_shim_file(
-            &target,
-            "#!/bin/sh\n# DeepSeek Harness Desktop - new shim\n",
-        )
-        .unwrap();
+        write_shim_file(&target, "#!/bin/sh\n# HanaWorlds DSH Shell - new shim\n").unwrap();
 
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
-            "#!/bin/sh\n# DeepSeek Harness Desktop - new shim\n"
+            "#!/bin/sh\n# HanaWorlds DSH Shell - new shim\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -425,7 +468,7 @@ mod tests {
     fn cmd_shim_with_non_ascii_path_uses_console_code_page() {
         let dir = temp_dir("non-ascii-cmd");
         let target = dir.join("pnpm.cmd");
-        let content = "@echo off\r\nrem DeepSeek Harness Desktop - pnpm command shim (generated)\r\nset \"PNPM_BIN=C:\\Users\\小蔡\\pnpm.cjs\"\r\n";
+        let content = "@echo off\r\nrem HanaWorlds DSH Shell - pnpm command shim (generated)\r\nset \"PNPM_BIN=C:\\Users\\小蔡\\pnpm.cjs\"\r\n";
         assert!(!content.is_ascii());
 
         write_shim_file(&target, content).unwrap();
@@ -464,14 +507,20 @@ mod tests {
         let dir = temp_dir("non-ascii-ps1");
         let target = dir.join("pnpm.ps1");
         let content =
-            "# DeepSeek Harness Desktop - pnpm command shim (generated)\r\n$pnpmBin = 'C:\\Users\\小蔡\\pnpm.cjs'\r\n";
+            "# HanaWorlds DSH Shell - pnpm command shim (generated)\r\n$pnpmBin = 'C:\\Users\\小蔡\\pnpm.cjs'\r\n";
 
         write_shim_file(&target, content).unwrap();
 
         let bytes = std::fs::read(&target).unwrap();
-        assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF], "ps1 shim needs a utf-8 bom");
         assert_eq!(
-            std::fs::read_to_string(&target).unwrap().trim_start_matches('\u{feff}'),
+            &bytes[..3],
+            &[0xEF, 0xBB, 0xBF],
+            "ps1 shim needs a utf-8 bom"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target)
+                .unwrap()
+                .trim_start_matches('\u{feff}'),
             content
         );
         assert!(!is_foreign_file(&target));
@@ -497,7 +546,7 @@ mod tests {
     fn code_page_encoded_shim_stays_overwritable() {
         let dir = temp_dir("codepage-overwrite");
         let target = dir.join("pnpm.cmd");
-        let header = "@echo off\r\nrem DeepSeek Harness Desktop - pnpm command shim (generated)\r\n";
+        let header = "@echo off\r\nrem HanaWorlds DSH Shell - pnpm command shim (generated)\r\n";
         write_shim_file(&target, &format!("{header}rem C:\\Users\\小蔡\r\n")).unwrap();
         assert!(!is_foreign_file(&target));
 

@@ -9,6 +9,8 @@
 
 #[cfg(not(windows))]
 use std::fs;
+#[cfg(unix)]
+use std::path::Path;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
@@ -38,19 +40,22 @@ pub use pnpm::{find_user_pnpm, pnpm_env_value};
 
 /// Windows 下 shim 根目录名（`%LOCALAPPDATA%\<此目录>\bin`）
 #[cfg_attr(not(windows), allow(dead_code))] // 仅 Windows 的 bin 目录计算使用
-const CLI_ROOT_DIR_NAME: &str = "deepseek-harness";
+const CLI_ROOT_DIR_NAME: &str = "hanaworlds-dsh";
 
 /// Unix 下 shim 所在目录（XDG 约定）
 #[cfg(unix)]
-const UNIX_BIN_DIR: &str = ".local/bin";
+const UNIX_BIN_DIR: &str = ".local/share/hanaworlds-dsh/bin";
+#[cfg(unix)]
+const UNIX_DEV_BIN_DIR: &str = ".local/share/hanaworlds-dsh.dev/bin";
 
 // ---------------------------------------------------------------------------
 // 路径计算
 // ---------------------------------------------------------------------------
 
 /// bin 目录：
-/// - Windows：`%LOCALAPPDATA%\deepseek-harness\bin`（用户级、不随应用数据目录变动）
-/// - Unix：`~/.local/bin`（XDG 约定，通常已在 PATH 中）
+/// - Windows：`%LOCALAPPDATA%\hanaworlds-dsh\bin`
+/// - Unix：`~/.local/share/hanaworlds-dsh/bin`
+/// 两者均与普通 DSH 的命令行集成目录隔离。
 pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
     #[cfg(windows)]
     {
@@ -77,12 +82,17 @@ pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
             .path()
             .home_dir()
             .unwrap_or_else(|_| PathBuf::from("."));
-        if cfg!(debug_assertions) {
-            home.join(".local/bin/dev")
-        } else {
-            home.join(UNIX_BIN_DIR)
-        }
+        unix_bin_dir(&home, cfg!(debug_assertions))
     }
+}
+
+#[cfg(unix)]
+fn unix_bin_dir(home: &Path, debug: bool) -> PathBuf {
+    home.join(if debug {
+        UNIX_DEV_BIN_DIR
+    } else {
+        UNIX_BIN_DIR
+    })
 }
 
 /// 主 shim 文件路径（状态展示用）
@@ -192,6 +202,24 @@ pub fn unregister_path(app_handle: &AppHandle) -> Result<(), String> {
         strip_shell_rc(app_handle)?;
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod isolation_tests {
+    use super::*;
+
+    #[test]
+    fn release_and_debug_bins_are_outside_ordinary_dsh_bin() {
+        let home = Path::new("/isolated/test-home");
+        let ordinary = home.join(".local/bin");
+        let release = unix_bin_dir(home, false);
+        let debug = unix_bin_dir(home, true);
+        assert_ne!(release, ordinary);
+        assert_ne!(debug, ordinary);
+        assert_ne!(release, debug);
+        assert_eq!(release, home.join(".local/share/hanaworlds-dsh/bin"));
+        assert_eq!(debug, home.join(".local/share/hanaworlds-dsh.dev/bin"));
+    }
 }
 
 #[cfg(test)]

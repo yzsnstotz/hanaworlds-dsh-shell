@@ -78,7 +78,7 @@ pub const DSH_MANIFEST_RELATIVE: &str = "package.json";
 
 /// 开发构建的用户级 shim 根目录名，不与 release 的 CLI 集成目录冲突。
 #[cfg_attr(not(windows), allow(dead_code))] // 仅 Windows 的 bin 目录计算使用
-pub const CLI_ROOT_DEV_DIR_NAME: &str = "dev-dsh";
+pub const CLI_ROOT_DEV_DIR_NAME: &str = "hanaworlds-dsh.dev";
 
 /// 旧版数据目录名：迁移前 $DSH_HOME 位于 `{app_data}/data/dsh`，
 /// 现仅用于 legacy 路径识别（见 service::migrate）。新 $DSH_HOME = 官方 `~/.dsh`。

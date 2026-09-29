@@ -1,5 +1,5 @@
 //! Unix shell rc 幂等块更新：向 `~/.zshrc` / `~/.bashrc` 注入/移除
-//! `~/.local/bin` 的 PATH 导出块（备份 + 失败回滚）。
+//! HanaWorlds 私有 bin 目录的 PATH 导出块（备份 + 失败回滚）。
 //!
 //! 注入/移除（依赖 `AppHandle::path()`）仅 Unix 编译；纯文本操作辅助（upsert /
 //! strip / 备份写回）在全部平台编译（Windows 上按 dead_code 允许，供测试覆盖）。
@@ -10,15 +10,15 @@ use tauri::{AppHandle, Manager};
 
 /// shell rc 注入标记（用于幂等增删）
 #[cfg_attr(windows, allow(dead_code))]
-pub(super) const RC_MARK_START: &str = "# >>> deepseek-harness dsh >>>";
+pub(super) const RC_MARK_START: &str = "# >>> hanaworlds-dsh shell >>>";
 #[cfg_attr(windows, allow(dead_code))]
-pub(super) const RC_MARK_END: &str = "# <<< deepseek-harness dsh <<<";
+pub(super) const RC_MARK_END: &str = "# <<< hanaworlds-dsh shell <<<";
 
 /// Unix 下需要写入 PATH 导出的 rc 文件（按顺序处理）
 #[cfg_attr(windows, allow(dead_code))]
 pub(super) const RC_FILES: [&str; 2] = [".zshrc", ".bashrc"];
 
-/// Unix：向 `~/.zshrc` / `~/.bashrc` 幂等注入 `~/.local/bin` 的 PATH 导出。
+/// Unix：向 `~/.zshrc` / `~/.bashrc` 幂等注入 HanaWorlds 私有 bin 目录的 PATH 导出。
 ///
 /// 只更新自身标记块：读取原文件 → 移除旧块 → 末尾追加新块；仅当文件不存在时
 /// 才新建。读失败（非"不存在"）直接报错退出，绝不把"读不到"当作空文件去
@@ -29,7 +29,10 @@ pub(super) fn inject_shell_rc(app_handle: &AppHandle) -> Result<(), String> {
         .path()
         .home_dir()
         .map_err(|_| "RC_HOME_RESOLVE_FAILED: failed to resolve home directory".to_string())?;
-    let block = format!("{RC_MARK_START}\nexport PATH=\"$HOME/.local/bin:$PATH\"\n{RC_MARK_END}\n");
+    let block = format!(
+        "{RC_MARK_START}\nexport PATH=\"$HOME/{}:$PATH\"\n{RC_MARK_END}\n",
+        super::UNIX_BIN_DIR
+    );
 
     for name in RC_FILES {
         let rc_path = home.join(name);
@@ -97,12 +100,12 @@ fn upsert_rc_block(content: &str, block: &str) -> String {
     out
 }
 
-/// 原子写回 rc 文件：写入前先备份为 `<file>.dsh-backup`，再通过同目录
+/// 原子写回 rc 文件：写入前先备份为 `<file>.hanaworlds-dsh-backup`，再通过同目录
 /// 临时文件 + rename 原子替换；写失败时删除临时文件并回滚备份内容，
 /// 保证任何异常路径下用户原文件都不会被半写/被清空。
 #[cfg_attr(windows, allow(dead_code))]
 fn write_rc_with_backup(rc_path: &std::path::Path, new_content: &str) -> Result<(), String> {
-    let backup_path = rc_path.with_extension("dsh-backup");
+    let backup_path = rc_path.with_extension("hanaworlds-dsh-backup");
     let had_original = rc_path.exists();
     if had_original {
         fs::copy(rc_path, &backup_path).map_err(|e| {
@@ -114,7 +117,7 @@ fn write_rc_with_backup(rc_path: &std::path::Path, new_content: &str) -> Result<
         })?;
     }
 
-    let tmp_path = rc_path.with_extension("dsh-rc-tmp");
+    let tmp_path = rc_path.with_extension("hanaworlds-dsh-rc-tmp");
     fs::write(&tmp_path, new_content)
         .map_err(|e| format!("WRITE_RC_FAILED: write {} failed: {e}", tmp_path.display()))?;
     let rename_res = match fs::rename(&tmp_path, rc_path) {
@@ -168,7 +171,7 @@ mod tests {
     use super::*;
 
     const RC_BLOCK: &str =
-        "# >>> deepseek-harness dsh >>>\nexport PATH=\"$HOME/.local/bin:$PATH\"\n# <<< deepseek-harness dsh <<<\n";
+        "# >>> hanaworlds-dsh shell >>>\nexport PATH=\"$HOME/.local/share/hanaworlds-dsh/bin:$PATH\"\n# <<< hanaworlds-dsh shell <<<\n";
 
     /// issue #57：目标 rc 文件已存在且包含用户自定义内容 → 只追加块，原内容保留
     #[test]
@@ -224,6 +227,22 @@ mod tests {
         assert_eq!(strip_rc_block(&cleaned), cleaned);
     }
 
+    #[test]
+    fn ordinary_dsh_rc_block_survives_hanaworlds_enable_and_disable() {
+        let ordinary = "# >>> deepseek-harness dsh >>>\nexport PATH=\"$HOME/.local/bin:$PATH\"\n# <<< deepseek-harness dsh <<<\n";
+        let home = temp_dir("ordinary-dsh-rc-isolation");
+        let rc = home.join(".zshrc");
+        std::fs::write(&rc, ordinary).unwrap();
+        let enabled = upsert_rc_block(&std::fs::read_to_string(&rc).unwrap(), RC_BLOCK);
+        write_rc_with_backup(&rc, &enabled).unwrap();
+        assert!(enabled.contains(ordinary));
+        assert!(enabled.contains(RC_BLOCK));
+        let disabled = strip_rc_block(&std::fs::read_to_string(&rc).unwrap());
+        write_rc_with_backup(&rc, &disabled).unwrap();
+        assert_eq!(std::fs::read(&rc).unwrap(), ordinary.as_bytes());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     /// 写回：备份保留原内容、目标被替换为 new_content
     #[test]
     fn write_rc_with_backup_preserves_backup() {
@@ -238,7 +257,7 @@ mod tests {
             "original\n# block\n"
         );
         assert_eq!(
-            std::fs::read_to_string(rc_path.with_extension("dsh-backup")).unwrap(),
+            std::fs::read_to_string(rc_path.with_extension("hanaworlds-dsh-backup")).unwrap(),
             "original\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -251,7 +270,7 @@ mod tests {
         let rc_path = dir.join(".bashrc");
         write_rc_with_backup(&rc_path, "# block\n").unwrap();
         assert_eq!(std::fs::read_to_string(&rc_path).unwrap(), "# block\n");
-        assert!(!rc_path.with_extension("dsh-backup").exists());
+        assert!(!rc_path.with_extension("hanaworlds-dsh-backup").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

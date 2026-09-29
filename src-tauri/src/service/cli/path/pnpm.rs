@@ -6,7 +6,7 @@ use tauri::AppHandle;
 #[cfg(unix)]
 use tauri::Manager;
 
-use super::super::shim::is_generated_shim;
+use super::super::shim::{is_generated_shim, is_ordinary_dsh_shim};
 use super::get_bin_dir;
 
 /// 在继承 PATH 与平台标准目录中查找用户 pnpm（排除应用注册的 shim）。
@@ -140,7 +140,7 @@ fn usable_pnpm_candidate(candidate: &Path) -> bool {
         .metadata()
         .map(|metadata| metadata.len() <= 16 * 1024)
         .unwrap_or(false);
-    !is_small_wrapper || !is_generated_shim(candidate)
+    !is_small_wrapper || !(is_generated_shim(candidate) || is_ordinary_dsh_shim(candidate))
 }
 
 #[cfg(unix)]
@@ -317,9 +317,11 @@ mod tests {
         let root = temp_dir("pnpm-own-shim-only");
         let desktop_bin = root.join("desktop-bin");
         let copied_bin = root.join("copied-bin");
+        let ordinary_bin = root.join("ordinary-dsh-bin");
         let empty = root.join("empty");
         std::fs::create_dir_all(&desktop_bin).unwrap();
         std::fs::create_dir_all(&copied_bin).unwrap();
+        std::fs::create_dir_all(&ordinary_bin).unwrap();
         std::fs::create_dir_all(&empty).unwrap();
         let name = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
         let own = desktop_bin.join(name);
@@ -327,14 +329,24 @@ mod tests {
         for path in [&own, &copied] {
             std::fs::write(
                 path,
-                "# DeepSeek Harness Desktop - pnpm command shim (generated)\n",
+                "# HanaWorlds DSH Shell - pnpm command shim (generated)\n",
             )
             .unwrap();
             make_executable(path);
         }
+        let ordinary = ordinary_bin.join(name);
+        std::fs::write(
+            &ordinary,
+            "# DeepSeek Harness Desktop - pnpm command shim (generated)\n",
+        )
+        .unwrap();
+        make_executable(&ordinary);
 
         assert_eq!(
-            find_pnpm_in_dirs(&desktop_bin, &[desktop_bin.clone(), copied_bin, empty]),
+            find_pnpm_in_dirs(
+                &desktop_bin,
+                &[desktop_bin.clone(), copied_bin, ordinary_bin, empty]
+            ),
             None
         );
         let _ = std::fs::remove_dir_all(root);

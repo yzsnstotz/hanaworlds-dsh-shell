@@ -3,10 +3,10 @@
 //! `dsh` 与捆绑的 `pnpm` 都是 Node 脚本（`lib/bin.js` / `bin/pnpm.cjs`），并非原生
 //! 可执行文件，因此生成包装脚本（shim）并注册到用户 PATH：
 //!
-//! - Windows：`%LOCALAPPDATA%\deepseek-harness\bin\dsh.cmd` / `dsh.ps1` 与
+//! - Windows：`%LOCALAPPDATA%\hanaworlds-dsh\bin\dsh.cmd` / `dsh.ps1` 与
 //!   `pnpm.cmd` / `pnpm.ps1`，通过 `HKCU\Environment\Path` 注册并广播
 //!   `WM_SETTINGCHANGE`；
-//! - macOS/Linux：`~/.local/bin/dsh` 与 `~/.local/bin/pnpm`，必要时向
+//! - macOS/Linux：`~/.local/share/hanaworlds-dsh/bin/dsh` 与同目录的 `pnpm`，必要时向
 //!   `~/.zshrc` / `~/.bashrc` 幂等更新 PATH 导出块（只动自身标记块、保留
 //!   用户其余配置；写入前备份临时文件 + rename，失败自动回滚）。
 //!
