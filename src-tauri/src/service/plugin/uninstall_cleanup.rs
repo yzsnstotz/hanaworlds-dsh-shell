@@ -26,8 +26,35 @@ fn reconcile_at(profile: &Path, core_root: &Path) -> Result<Vec<String>, String>
             .join("node_modules"),
         Err(e) => return Err(format!("PLUGIN_UNINSTALL_PROFILE_MODULES: {}: {e}", profile_modules.display())),
     };
-    let lock = fs::read_to_string(profile.join("pnpm-lock.yaml"))
-        .map_err(|e| format!("PLUGIN_UNINSTALL_LOCK_READ: {e}"))?;
+    let lock = match fs::read_to_string(profile.join("pnpm-lock.yaml")) {
+        Ok(content) => {
+            let document: serde_yaml::Value = serde_yaml::from_str(&content)
+                .map_err(|e| format!("PLUGIN_UNINSTALL_LOCK_PARSE: {e}"))?;
+            if !document.is_mapping() {
+                return Err("PLUGIN_UNINSTALL_LOCK_PARSE: expected a mapping".to_string());
+            }
+            for section in ["importers", "packages", "snapshots"] {
+                if document.get(section).is_some_and(|value| !value.is_mapping()) {
+                    return Err(format!("PLUGIN_UNINSTALL_LOCK_PARSE: {section} must be a mapping"));
+                }
+            }
+            if let Some(importers) = document.get("importers").and_then(serde_yaml::Value::as_mapping) {
+                for importer in importers.values() {
+                    if !importer.is_mapping() {
+                        return Err("PLUGIN_UNINSTALL_LOCK_PARSE: importer must be a mapping".to_string());
+                    }
+                    for section in ["dependencies", "devDependencies", "optionalDependencies"] {
+                        if importer.get(section).is_some_and(|value| !value.is_mapping()) {
+                            return Err(format!("PLUGIN_UNINSTALL_LOCK_PARSE: importer {section} must be a mapping"));
+                        }
+                    }
+                }
+            }
+            Some(document)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("PLUGIN_UNINSTALL_LOCK_READ: {e}")),
+    };
     let mut names = Vec::new();
     let entries = match fs::read_dir(&modules) {
         Ok(entries) => entries,
@@ -52,7 +79,9 @@ fn reconcile_at(profile: &Path, core_root: &Path) -> Result<Vec<String>, String>
     }
     let mut removed = Vec::new();
     for name in names {
-        if !super::recovery::is_actionable_plugin_ref(&name) || lock.contains(&name) {
+        if !super::recovery::is_actionable_plugin_ref(&name)
+            || lock.as_ref().is_some_and(|lock| lock_references_package(lock, &name))
+        {
             continue;
         }
         let anchor = modules.join(&name);
@@ -73,6 +102,42 @@ fn reconcile_at(profile: &Path, core_root: &Path) -> Result<Vec<String>, String>
         }
     }
     Ok(removed)
+}
+
+fn lock_references_package(lock: &serde_yaml::Value, name: &str) -> bool {
+    if let Some(importers) = lock.get("importers").and_then(serde_yaml::Value::as_mapping) {
+        for importer in importers.values() {
+            for section in ["dependencies", "devDependencies", "optionalDependencies"] {
+                if importer
+                    .get(section)
+                    .and_then(serde_yaml::Value::as_mapping)
+                    .is_some_and(|entries| entries.keys().any(|key| key.as_str() == Some(name)))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    for section in ["packages", "snapshots"] {
+        if lock
+            .get(section)
+            .and_then(serde_yaml::Value::as_mapping)
+            .is_some_and(|entries| {
+                entries.keys().any(|key| {
+                    key.as_str().is_some_and(|key| {
+                        let key = key.strip_prefix('/').unwrap_or(key);
+                        key == name
+                            || key
+                                .strip_prefix(name)
+                                .is_some_and(|suffix| suffix.starts_with('@') && suffix.len() > 1)
+                    })
+                })
+            })
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn cleanup_after_uninstall(app_handle: &AppHandle, name: &str) -> Result<(), String> {
@@ -443,7 +508,7 @@ mod tests {
         fs::create_dir_all(&plugin).unwrap();
         fs::create_dir_all(anchor.parent().unwrap()).unwrap();
         fs::write(profile.join("package.json"), r#"{"dependencies":{}}"#).unwrap();
-        fs::write(profile.join("pnpm-lock.yaml"), "dsh-plugin-whale-pet: 0.2.9\n").unwrap();
+        fs::write(profile.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      dsh-plugin-whale-pet:\n        specifier: 0.2.9\n        version: 0.2.9\npackages:\n  dsh-plugin-whale-pet@0.2.9: {}\n").unwrap();
         fs::write(profile.join("pnpm-workspace.yaml"), "minimumReleaseAgeExclude:\n  - zod@4.4.3\n  - dsh-plugin-whale-pet@0.2.9\n").unwrap();
         fs::write(profile.join("node_modules/.pnpm-workspace-state-v1.json"), r#"{"settings":{"minimumReleaseAgeExclude":["zod@4.4.3","dsh-plugin-whale-pet@0.2.9"]}}"#).unwrap();
         crate::service::core::create_directory_link(&plugin.canonicalize().unwrap(), &anchor).unwrap();
@@ -462,6 +527,97 @@ mod tests {
         assert!(!fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap().contains("dsh-plugin-whale-pet@"));
         let state: serde_json::Value = serde_json::from_slice(&fs::read(profile.join("node_modules/.pnpm-workspace-state-v1.json")).unwrap()).unwrap();
         assert_eq!(state["settings"]["minimumReleaseAgeExclude"], serde_json::json!(["zod@4.4.3"]));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn longer_installed_package_name_in_lock_does_not_keep_removed_prefix_anchor() {
+        let root = fixture_root();
+        let profile = root.join("profile");
+        let core = root.join("core");
+        let modules = profile.join("node_modules");
+        let whale = modules.join("dsh-plugin-whale-pet");
+        let extra = modules.join("dsh-plugin-whale-pet-extra");
+        let whale_anchor = core.join("node_modules/dsh-plugin-whale-pet");
+        let extra_anchor = core.join("node_modules/dsh-plugin-whale-pet-extra");
+        fs::create_dir_all(&whale).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        fs::create_dir_all(whale_anchor.parent().unwrap()).unwrap();
+        fs::write(profile.join("package.json"), r#"{"dependencies":{"dsh-plugin-whale-pet-extra":"1.0.0"}}"#).unwrap();
+        fs::write(profile.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      dsh-plugin-whale-pet-extra:\n        specifier: 1.0.0\n        version: 1.0.0\npackages:\n  dsh-plugin-whale-pet-extra@1.0.0:\n    resolution: {integrity: fixture}\nsnapshots:\n  dsh-plugin-whale-pet-extra@1.0.0: {}\n").unwrap();
+        fs::write(profile.join("pnpm-workspace.yaml"), "minimumReleaseAgeExclude:\n  - dsh-plugin-whale-pet@0.2.9\n  - dsh-plugin-whale-pet-extra@1.0.0\n").unwrap();
+        crate::service::core::create_directory_link(&whale.canonicalize().unwrap(), &whale_anchor).unwrap();
+        crate::service::core::create_directory_link(&extra.canonicalize().unwrap(), &extra_anchor).unwrap();
+        fs::remove_dir(&whale).unwrap();
+
+        assert_eq!(reconcile_at(&profile, &core).unwrap(), vec!["dsh-plugin-whale-pet"]);
+        assert!(fs::symlink_metadata(&whale_anchor).is_err());
+        assert!(fs::symlink_metadata(&extra_anchor).is_ok());
+        let policy = fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap();
+        assert!(!policy.contains("dsh-plugin-whale-pet@"));
+        assert!(policy.contains("dsh-plugin-whale-pet-extra@1.0.0"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_lock_does_not_keep_fully_removed_plugin_residue() {
+        let root = fixture_root();
+        let profile = root.join("profile");
+        let core = root.join("core");
+        let whale = profile.join("node_modules/dsh-plugin-whale-pet");
+        let anchor = core.join("node_modules/dsh-plugin-whale-pet");
+        fs::create_dir_all(&whale).unwrap();
+        fs::create_dir_all(anchor.parent().unwrap()).unwrap();
+        fs::write(profile.join("package.json"), r#"{"dependencies":{}}"#).unwrap();
+        fs::write(profile.join("pnpm-workspace.yaml"), "minimumReleaseAgeExclude:\n  - zod@4.4.3\n  - dsh-plugin-whale-pet@0.2.9\n").unwrap();
+        crate::service::core::create_directory_link(&whale.canonicalize().unwrap(), &anchor).unwrap();
+        fs::remove_dir(&whale).unwrap();
+
+        assert_eq!(reconcile_at(&profile, &core).unwrap(), vec!["dsh-plugin-whale-pet"]);
+        assert!(fs::symlink_metadata(&anchor).is_err());
+        let policy = fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap();
+        assert!(!policy.contains("dsh-plugin-whale-pet@"));
+        assert!(policy.contains("zod@4.4.3"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_existing_lock_preserves_anchor_and_policy() {
+        let root = fixture_root();
+        let profile = root.join("profile");
+        let core = root.join("core");
+        let whale = profile.join("node_modules/dsh-plugin-whale-pet");
+        let anchor = core.join("node_modules/dsh-plugin-whale-pet");
+        fs::create_dir_all(&whale).unwrap();
+        fs::create_dir_all(anchor.parent().unwrap()).unwrap();
+        fs::write(profile.join("package.json"), r#"{"dependencies":{}}"#).unwrap();
+        fs::write(profile.join("pnpm-lock.yaml"), "importers: [\n").unwrap();
+        fs::write(profile.join("pnpm-workspace.yaml"), "minimumReleaseAgeExclude:\n  - dsh-plugin-whale-pet@0.2.9\n").unwrap();
+        crate::service::core::create_directory_link(&whale.canonicalize().unwrap(), &anchor).unwrap();
+        fs::remove_dir(&whale).unwrap();
+
+        assert!(reconcile_at(&profile, &core).unwrap_err().contains("PLUGIN_UNINSTALL_LOCK_PARSE"));
+        assert!(fs::symlink_metadata(&anchor).is_ok());
+        assert!(fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap().contains("dsh-plugin-whale-pet@0.2.9"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn structurally_invalid_lock_section_preserves_anchor() {
+        let root = fixture_root();
+        let profile = root.join("profile");
+        let core = root.join("core");
+        let whale = profile.join("node_modules/dsh-plugin-whale-pet");
+        let anchor = core.join("node_modules/dsh-plugin-whale-pet");
+        fs::create_dir_all(&whale).unwrap();
+        fs::create_dir_all(anchor.parent().unwrap()).unwrap();
+        fs::write(profile.join("package.json"), r#"{"dependencies":{}}"#).unwrap();
+        fs::write(profile.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\nimporters: []\n").unwrap();
+        crate::service::core::create_directory_link(&whale.canonicalize().unwrap(), &anchor).unwrap();
+        fs::remove_dir(&whale).unwrap();
+
+        assert!(reconcile_at(&profile, &core).unwrap_err().contains("PLUGIN_UNINSTALL_LOCK_PARSE"));
+        assert!(fs::symlink_metadata(&anchor).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 }
