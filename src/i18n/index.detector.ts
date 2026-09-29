@@ -4,7 +4,7 @@ import { store } from '../store'
 import { resources } from './index.resource'
 
 /** 语言偏好持久化 key，与 setting store 保持同步 */
-export const LANGUAGE_STORAGE_KEY = 'deepseek-harness-desktop-language'
+export const LANGUAGE_STORAGE_KEY = 'hanaworlds-language'
 
 /** 同步语言探测：优先 localStorage 用户选择，其次内存/后端，最后浏览器语言 */
 export const languageDetector: LanguageDetectorModule = {

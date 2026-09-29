@@ -134,7 +134,7 @@ async fn download_from_source(
 /// 与检查更新用的 5s `http_client()` 区分。
 fn download_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("deepseek-harness-desktop")
+        .user_agent("hanaworlds-dsh-shell")
         .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
         .connect_timeout(Duration::from_secs(15))
         .build()

@@ -503,6 +503,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     envs.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
     envs.insert("NO_COLOR".to_string(), "1".to_string());
     envs.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
+    // The embedded DSH plugin manager invokes npm for registry lookups. Keep
+    // its cache in this Shell's profile so a user-wide npmrc (including one
+    // pointing at an unavailable volume) cannot break ordinary plugin installs.
+    let npm_cache = dsh_home.join("cache").join("npm").to_string_lossy().into_owned();
+    envs.insert("npm_config_cache".to_string(), npm_cache.clone());
+    envs.insert("NPM_CONFIG_CACHE".to_string(), npm_cache);
     // 把服务实际使用的 node 路径显式交给子进程（pnpm/dsh shim 的 DSH_NODE
     // 优先）：市场（dsh-market）等子进程经 PATH 解析 node 可能与桌面端预检
     // 不一致（相对 PATH 条目 / junction / 子进程 PATH 布局差异），导致 pnpm

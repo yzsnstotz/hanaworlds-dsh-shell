@@ -571,15 +571,12 @@ function main(): void {
     'build',
   ])
 
-  // pnpm v10 的 deploy 默认命中「legacy」算法：把产物链接到全局共享存储，导致部署出
-  // 来的 node_modules 混入整个 workspace 的生产依赖（桌面壳的 React/UI 栈全部冗余）。
-  // 改为现代「注入式」deploy（`--config.inject-workspace-packages=true`），只把 bundle 的
-  // workspace 依赖及其真实生产闭包注入产物，得到紧凑可移植的 node_modules。
-  // 但注入式默认仍是 isolated 布局：第三方依赖收进 `.pnpm/<dep>@<ver>/` 虚拟仓库，
-  // 各插件靠虚拟仓库条目内的同级链接解析。materializeTree 把顶层插件符号链接解引用成
-  // 实体目录时会丢掉这些同级依赖链接，产物里插件 `dist/index.js` 的裸 import（pathe /
-  // unstorage 等）随之解析失败。改用 hoisted 布局（`--config.node-linker=hoisted`）让依赖
-  // 平铺到顶层 node_modules，产物即自包含可解析，也彻底绕开符号链接。
+  // pnpm 11.7.0 的现代 deploy 遇到 workspace patchedDependencies 会在
+  // createDeployFiles 中以未定义 patch 路径调用 path.resolve 而失败。
+  // bundle 自身只有 production dependencies。legacy deploy 的 --prod 会修改
+  // 根 workspace 的安装状态，并在下一次构建时删掉开发工具，因此不传 --prod；
+  // 后续 materialize/prune 校验运行期闭包。根 workspace 的 HTTP 补丁不属于
+  // 此闭包，允许 unused patch。
   // 目标必须是空目录（src-tauri/resources 内含下发清单，不能直接部署）且为相对路径，
   // 因此先部署到仓库内相对临时目录，再把自包含的 node_modules 落入 resources/node_modules。
   const deployTarget = '.build-plugins-tmp'
@@ -591,9 +588,9 @@ function main(): void {
       '--filter',
       'dsh-tauri-bundle',
       'deploy',
-      '--prod',
-      '--config.inject-workspace-packages=true',
+      '--legacy',
       '--config.node-linker=hoisted',
+      '--config.allow-unused-patches=true',
       deployTarget,
     ])
     const deployed = join(temp, 'node_modules')

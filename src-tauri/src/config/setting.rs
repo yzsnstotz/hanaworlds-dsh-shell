@@ -105,9 +105,9 @@ fn default_active_profile() -> String {
     "web".to_string()
 }
 
-/// 命令行集成默认开启（开发者工具场景，安装完成即可用）
+/// 默认不接管普通 DSH 的全局命令行集成。
 fn default_cli_link_enabled() -> bool {
-    true
+    false
 }
 
 /// 界面默认缩放为 100%。

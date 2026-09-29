@@ -14,6 +14,16 @@ pub(super) fn internal_plugin_entry_is_ready(entry: &Path) -> bool {
     serde_json::from_slice::<serde_json::Value>(&raw).is_ok_and(|manifest| manifest.is_object())
 }
 
+/// A readable plugin can still point at a previous app copy or a build tree.
+/// Only the resource in the running app is a valid internal-plugin source.
+pub(super) fn internal_plugin_entry_matches_source(entry: &Path, bundled: &Path) -> bool {
+    internal_plugin_entry_is_ready(entry)
+        && std::fs::canonicalize(entry)
+            .ok()
+            .zip(std::fs::canonicalize(bundled).ok())
+            .is_some_and(|(actual, expected)| actual == expected)
+}
+
 /// 清理 profile bundle 列表中的重复引用，保留首次出现的顺序。
 ///
 /// 旧工作目录切换期间，重复执行安装/迁移可能把同一个 bundle 追加多次；
@@ -316,6 +326,29 @@ mod tests {
         std::fs::write(&manifest, [0xff, 0xfe, 0xfd]).unwrap();
         assert!(!internal_plugin_entry_is_ready(&root));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relocated_app_replaces_even_readable_old_plugin_link() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("dsh-relocated-link-{}", std::process::id()));
+        let old = root.join("old/dsh-tauri");
+        let current = root.join("current/dsh-tauri");
+        let entry = root.join("profile/node_modules/dsh-tauri");
+        let _ = std::fs::remove_dir_all(&root);
+        for source in [&old, &current] {
+            std::fs::create_dir_all(source).unwrap();
+            std::fs::write(source.join("package.json"), br#"{"name":"dsh-tauri"}"#).unwrap();
+        }
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        symlink(&old, &entry).unwrap();
+        assert!(internal_plugin_entry_is_ready(&entry));
+        assert!(!internal_plugin_entry_matches_source(&entry, &current));
+        remove_stale_plugin_entry(&entry).unwrap();
+        symlink(&current, &entry).unwrap();
+        assert!(internal_plugin_entry_matches_source(&entry, &current));
         let _ = std::fs::remove_dir_all(root);
     }
 

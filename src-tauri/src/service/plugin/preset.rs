@@ -333,18 +333,34 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
     if let Some(dir) = dev_plugin_dir(id) {
         return Some(dir);
     }
+    // On macOS, Launch Services can resolve a duplicated bundle identifier to an
+    // older copy of the app. The running executable is the authority for its
+    // bundled resources, especially when an .app is moved or reinstalled.
+    #[cfg(target_os = "macos")]
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(Path::parent) {
+            if let Some(candidate) = find_bundled_in_root(&contents.join("Resources"), id) {
+                return Some(candidate);
+            }
+        }
+    }
     if let Ok(dir) = app_handle.path().resource_dir() {
         if let Some(candidate) = find_bundled_in_root(&dir, id) {
             return Some(candidate);
         }
     }
-    let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
-    let deployed = resources.join("node_modules").join(id);
-    if deployed.join("package.json").exists() {
-        return Some(deployed);
+    #[cfg(debug_assertions)]
+    {
+        let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+        let deployed = resources.join("node_modules").join(id);
+        if deployed.join("package.json").exists() {
+            return Some(deployed);
+        }
+        let legacy = resources.join(BUNDLED_PLUGINS_DIR).join(id);
+        return legacy.join("package.json").exists().then_some(legacy);
     }
-    let legacy = resources.join(BUNDLED_PLUGINS_DIR).join(id);
-    legacy.join("package.json").exists().then_some(legacy)
+    #[cfg(not(debug_assertions))]
+    None
 }
 
 /// 删除旧版随包资源目录 `resources/preset-plugins` 与 `resources/internal-plugins`，

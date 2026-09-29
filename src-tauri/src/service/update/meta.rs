@@ -30,7 +30,7 @@ pub(super) struct LatestRelease {
 /// 构造带统一 UA 的 HTTP 客户端（并发小、超时短）。
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("deepseek-harness-desktop")
+        .user_agent("hanaworlds-dsh-shell")
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("UPDATE_CLIENT: {e}"))

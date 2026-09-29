@@ -1,7 +1,7 @@
 {
-  "name": "deepseek-harness-desktop",
+  "name": "@hanaworlds/dsh-shell",
   "type": "module",
-  "version": "0.19.1",
+  "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@11.7.0",
   "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
@@ -26,7 +26,7 @@
     "knip": "knip",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
-    "icons": "tauri icon public/favicon.svg && tsx scripts/rebuild-macos-icon.ts"
+    "icons": "tauri icon public/blossom-world.png && node -e \"require('node:fs').copyFileSync('src-tauri/icons/128x128@2x.png','src-tauri/icons/macos-tray.png')\""
   },
   "dependencies": {
     "@genapi/pipeline": "catalog:",

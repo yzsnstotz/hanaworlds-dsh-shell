@@ -54,6 +54,13 @@ pub(crate) fn build_plugin_envs(
             node_abs.to_string_lossy().into_owned(),
         ),
     ]);
+    let npm_cache = config::get_dsh_data_path(app_handle)
+        .join("cache")
+        .join("npm")
+        .to_string_lossy()
+        .into_owned();
+    envs.insert("npm_config_cache".to_string(), npm_cache.clone());
+    envs.insert("NPM_CONFIG_CACHE".to_string(), npm_cache);
     // 用户 pnpm 过旧/不可探测时强制 pnpm shim 优先捆绑版，避免 8/9 的
     // autoInstallPeers 语义与 workspace-root gate 破坏插件安装（见 ensure_pnpm）
     if prefer_bundled_pnpm {

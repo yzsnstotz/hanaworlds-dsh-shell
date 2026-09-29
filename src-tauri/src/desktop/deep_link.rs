@@ -13,7 +13,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 /// 官方唯一使用的深链动作（尾斜杠形式等价）。
 pub fn is_open_request(url: &str) -> bool {
-    url == "dsh://open" || url == "dsh://open/"
+    url == "hanaworlds://open" || url == "hanaworlds://open/"
 }
 
 /// 注册 `dsh` 协议并接管打开事件。最佳努力：失败只告警，不阻断启动。
@@ -39,13 +39,14 @@ mod tests {
 
     #[test]
     fn recognizes_the_official_open_requests() {
-        assert!(is_open_request("dsh://open"));
-        assert!(is_open_request("dsh://open/"));
+        assert!(is_open_request("hanaworlds://open"));
+        assert!(is_open_request("hanaworlds://open/"));
     }
 
     #[test]
     fn ignores_other_urls() {
         assert!(!is_open_request("dsh://oauth/callback"));
+        assert!(!is_open_request("dsh://open"));
         assert!(!is_open_request("https://platform.deepseek.com/dsh/authorized?login_source=desktop"));
         assert!(!is_open_request(""));
     }

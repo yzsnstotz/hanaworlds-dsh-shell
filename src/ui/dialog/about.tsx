@@ -36,10 +36,10 @@ export function DesktopAboutDialog(props: DesktopAboutDialogProps) {
             <Modal.CloseTrigger />
             <Modal.Body className="space-y-3">
               <div className="flex flex-col items-center gap-2 pt-1 text-center">
-                <img src="/favicon.svg" alt={t('about.title')} className="w-12 h-12 rounded-md" />
+                <img src="/blossom-world.png" alt={t('about.title')} className="w-12 h-12 rounded-md" />
 
                 <div className="text-base font-semibold text-ink">
-                  {about?.powered_by ?? 'DeepSeek Harness Desktop'}
+                  {about?.powered_by ?? 'HanaWorlds'}
                 </div>
                 <Description className="text-xs">
                   {t('about.powered_by', { name: about?.powered_by ?? 'Hairy & DeepSeek' })}

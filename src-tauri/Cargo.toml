@@ -1,8 +1,8 @@
 [package]
-name = "deepseek-harness-desktop"
-version = "0.19.1"
-description = "Desktop application for DeepSeek Harness (dsh)"
-authors = [ "deepseek-harness-desktop contributors" ]
+name = "hanaworlds-dsh-shell"
+version = "0.1.0"
+description = "HanaWorlds desktop shell based on DeepSeek Harness"
+authors = [ "HanaWorlds contributors", "Deepseek Harness Desktop contributors" ]
 edition = "2021"
 
 [lib]

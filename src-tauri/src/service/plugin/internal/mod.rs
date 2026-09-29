@@ -28,7 +28,7 @@ use crate::config;
 
 use manifest::{
     collect_dangling_local_link_deps, dedupe_profile_bundles, dep_matches_spec,
-    internal_plugin_entry_is_ready, is_local_link_dep, remove_duplicate_bundle_entries_from_patch,
+    internal_plugin_entry_matches_source, is_local_link_dep, remove_duplicate_bundle_entries_from_patch,
     remove_internal_plugins_from_manifest, remove_stale_plugin_entry, write_profile_manifest,
 };
 use materialize::{materialize_links, OfflineLink};
@@ -736,7 +736,7 @@ async fn ensure_inner(
             .get(&name)
             .is_some_and(|actual| dep_matches_spec(actual, &expected));
         let entry = profile.join("node_modules").join(&name);
-        let link_ok = internal_plugin_entry_is_ready(&entry);
+        let link_ok = internal_plugin_entry_matches_source(&entry, &bundled);
         // ③ 挂载登记：`dsh.profile.bundles` 缺项时插件从不挂载——宿主插件的 apply
         // （含 dsh-tauri 的载体鉴权 gate）不运行，索引恒 401、健康检查永远
         // `boot page returned 401`。这种「依赖在、bundle 没登记」的半残状态必须判为
@@ -820,11 +820,14 @@ async fn ensure_inner(
     // dep_ok=false 再装，形成不可恢复的启动死循环。保留健康链接，交给本轮 `dsh plugin
     // add` 重写依赖声明即可（pnpm 处理 link: 依赖时会自行覆盖旧入口）。
     let mut entries = HashSet::new();
-    for (_, _, entry) in &need {
+    for (id, _, entry) in &need {
         if !entries.insert(entry.clone()) {
             continue;
         }
-        if internal_plugin_entry_is_ready(entry) {
+        if bundled_plugin_dir(app_handle, id)
+            .as_deref()
+            .is_some_and(|bundled| internal_plugin_entry_matches_source(entry, bundled))
+        {
             log::info!(
                 "INTERNAL_PLUGIN_ENTRY_HEALTHY: keeping intact link {} (no delete + recreate)",
                 entry.display()

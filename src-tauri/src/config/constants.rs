@@ -47,22 +47,21 @@ pub const PNPM_MIRROR_BASE_URL: &str = "https://registry.npmmirror.com/pnpm/-/";
 /// Harness 服务地址与默认端口
 pub const DSH_HOST: &str = "http://127.0.0.1";
 /// 生产（release）默认端口
-pub const DSH_PORT: u16 = 3080;
+pub const DSH_PORT: u16 = 3090;
 /// 开发（debug）默认端口：与生产隔离，避免 `pnpm tauri dev` 与已安装桌面端
 /// 争用同一个 3080 端口冲突。
-pub const DSH_DEV_PORT: u16 = 3081;
+pub const DSH_DEV_PORT: u16 = 3091;
 
-/// 官方 Harness 用户数据目录名：release 构建的 `$DSH_HOME` 默认目录（`~/.dsh`，
-/// 与官方 node 安装保持一致）。
-pub const DSH_HOME_DIR_NAME: &str = ".dsh";
-/// 开发（debug）构建的用户数据目录名（`~/.dsh.dev`）：与生产数据目录隔离。
+/// HanaWorlds release 的独立用户数据目录。
+pub const DSH_HOME_DIR_NAME: &str = ".hanaworlds-dsh";
+/// HanaWorlds debug 的独立用户数据目录。
 /// 会话、档案、插件与主题等数据各自独立——`pnpm tauri dev` 与已安装桌面端
 /// 同时运行时互不干扰，也不会互相污染对方的会话数据。
-pub const DSH_HOME_DEV_DIR_NAME: &str = ".dsh.dev";
+pub const DSH_HOME_DEV_DIR_NAME: &str = ".hanaworlds-dsh.dev";
 
 /// 应用标识符：`app_data_dir()` / `app_local_data_dir()` 的目录名，必须与
 /// `tauri.conf.json` 的 `identifier` 逐字一致（日志目录同样由它派生）。
-pub const APP_IDENTIFIER: &str = "dsh-tauri";
+pub const APP_IDENTIFIER: &str = "org.hanaworlds.dsh-shell";
 
 /// 历史应用标识符（`io.github.hairyf.deepseek-harness-desktop`）：标识符缩短为
 /// `dsh-tauri` 后旧用户的 app-data 目录名，仅用于迁移来源识别（见

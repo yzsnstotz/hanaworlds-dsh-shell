@@ -121,14 +121,6 @@ pub fn setup(app_handle: tauri::AppHandle) {
     // workflow::sweep_orphan_harness），避免新实例一路漂移端口
     crate::service::workflow::sweep_orphan_harness(&app_handle);
 
-    // 旧版 AppData data/dsh → 官方 $DSH_HOME（~/.dsh）数据迁移。
-    // 必须在 sweep 之后（先杀掉占用文件句柄的残留 dsh 进程）、scheduler/
-    // auto_start 之前（迁移完成前不启动 dsh）。失败仅告警不阻断：旧数据
-    // 原地保留，下次启动重试。
-    if let Err(e) = crate::service::migrate::migrate(&app_handle) {
-        log::warn!("dsh home migration deferred (old data kept): {e}");
-    }
-
     // 启动自愈：清理指向旧位置的 pnpm `.modules.yaml`。老版本完成迁移后该文件
     // 仍记录旧 $DSH_HOME（AppData）下的绝对路径，导致任何 pnpm 操作抛
     // `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`（插件安装/更新失败，issue #103）。
@@ -240,7 +232,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Deepseek Harness Desktop")
+        .tooltip("HanaWorlds")
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
@@ -250,7 +242,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Deepseek Harness Desktop")
+        .tooltip("HanaWorlds")
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
@@ -599,7 +591,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     let webview_builder =
         WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
-            .title("Deepseek Harness Desktop")
+            .title("HanaWorlds")
             .inner_size(1280.0, 840.0)
             .min_inner_size(860.0, 620.0)
             .resizable(true);
@@ -846,7 +838,7 @@ pub fn build_shell_window(
 /// 「文件 → 新建窗口」：`window-<N>` 序号 label，chrome 全部取 `build_shell_window`。
 pub fn build_extra_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::WebviewWindow<Wry>> {
     let sequence = EXTRA_WINDOW_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    build_shell_window(app, format!("window-{sequence}"), "Deepseek Harness Desktop")
+    build_shell_window(app, format!("window-{sequence}"), "HanaWorlds")
 }
 
 #[cfg(all(test, windows))]
@@ -1168,12 +1160,6 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .manage(crate::desktop::pet_mouse::PetMouseStreamState::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
-            // 标识符改名（app-data 目录名同步变化）：旧目录必须在任何 store 读写之前
-            // 搬过来，否则升级用户会被误判成首装（见
-            // service::migrate::migrate_app_data_dir）。失败仅告警，不阻断启动。
-            if let Err(error) = crate::service::migrate::migrate_app_data_dir(&app_handle) {
-                log::warn!("[migrate] app data dir migration failed: {error}");
-            }
             // 首装检测必须最先执行：窗口几何恢复/退出保存等任何 store 写入都会
             // 创建 store 文件，判定晚于它们会把首装误判为升级（见
             // config::detect_first_install 的时序说明）。

@@ -479,26 +479,20 @@ fn user_home_dir() -> Option<PathBuf> {
 
 /// Harness 用户数据目录（$DSH_HOME）。
 ///
-/// 与官方 dsh（`${DSH_HOME:-$HOME/.dsh}`）保持一致：
-/// - release 构建使用非空环境变量 `DSH_HOME`，否则默认 `~/.dsh`；
-/// - debug 构建始终使用 `~/.dsh.dev`，忽略从旧 desktop checkout、终端或 release
-///   shim 继承的 `DSH_HOME`，避免两个构建误用同一 profile 并发改写；
-/// - debug 子进程由 launch 显式收到同一个 `~/.dsh.dev`，开发版与生产版的会话、档案、
-///   插件与主题因此互不干扰。
-pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
-    let dir_name = if cfg!(debug_assertions) {
+/// HanaWorlds release 和 debug 使用各自的目录；子进程由 launch 显式收到同一路径。
+/// 不接受外部 DSH_HOME 覆盖，以免读写普通 DSH 的用户档案。
+fn dsh_data_path(home: &Path, debug: bool) -> PathBuf {
+    let dir_name = if debug {
         DSH_HOME_DEV_DIR_NAME
     } else {
-        if let Some(home) = std::env::var_os("DSH_HOME") {
-            if !home.is_empty() {
-                return PathBuf::from(home);
-            }
-        }
         DSH_HOME_DIR_NAME
     };
-    user_home_dir()
-        .map(|home| home.join(dir_name))
-        .unwrap_or_else(|| PathBuf::from(dir_name))
+    home.join(dir_name)
+}
+
+pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
+    let home = user_home_dir().unwrap_or_default();
+    dsh_data_path(&home, cfg!(debug_assertions))
 }
 
 /// dsh 服务日志文件路径
@@ -632,6 +626,14 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hanaworlds_profile_paths_are_separate_from_dsh_and_each_other() {
+        let home = Path::new("/tmp/shell-test-home");
+        assert_eq!(dsh_data_path(home, false), home.join(".hanaworlds-dsh"));
+        assert_eq!(dsh_data_path(home, true), home.join(".hanaworlds-dsh.dev"));
+        assert_ne!(dsh_data_path(home, false), home.join(".dsh"));
+    }
 
     /// 为文件布局测试生成互不冲突的临时目录。
     fn unique_runtime_test_dir(name: &str) -> PathBuf {
