@@ -578,6 +578,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 只有该标记在场时它才覆写 connection 的鉴权闸门，因此同一 profile 下独立运行
     // 的 `dsh web` 不受影响（取代原先对核心 JS 打的 `--skip-auth` 磁盘补丁）。
     envs.insert("DSH_TAURI_EMBEDDED".to_string(), "1".to_string());
+    let hanaworlds_token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    crate::bridge::hanaworlds::install_token(hanaworlds_token.clone());
+    envs.insert("HANAWORLDS_DESKTOP_TOKEN".to_string(), hanaworlds_token);
 
     // 日志文件（前端日志面板读取）。
     // 每次真实启动前轮转：只保留最近 3 次启动的日志，旧文件后退为
