@@ -55,6 +55,16 @@ describe('hanaWorlds trusted Shell binding', () => {
     expect(visible).toMatchObject({ status: 'bound', worldRef: firstGrant.worldRef, engineActorName: firstGrant.engineActorName })
     expect(JSON.stringify(visible)).not.toContain(firstGrant.grantRef)
     expect(JSON.stringify(visible)).not.toContain('authorizationRef')
+    const withoutWorld = await hanaworlds.call('session-a', 'SwitchWorldContext', {
+      requestId: 'intent-no-world',
+    })
+    expect(withoutWorld).toEqual({ ok: true })
+    expect(runtime.calls[0]?.body).toMatchObject({
+      actorRef: 'luanti:player-a',
+      sessionRef: 'session-a',
+      worldRef: firstGrant.worldRef,
+      requestId: 'intent-no-world',
+    })
     const result = await hanaworlds.call('session-a', 'SwitchWorldContext', {
       actorRef: 'forged',
       sessionRef: 'forged',
@@ -64,15 +74,17 @@ describe('hanaWorlds trusted Shell binding', () => {
       requestId: 'intent-a',
     })
     expect(result).toEqual({ ok: true })
-    expect(runtime.calls).toHaveLength(1)
-    expect(runtime.calls[0]?.body).toMatchObject({
+    expect(runtime.calls).toHaveLength(2)
+    expect(runtime.calls[1]?.body).toMatchObject({
       actorRef: 'luanti:player-a',
       sessionRef: 'session-a',
       worldRef: firstGrant.worldRef,
       requestId: 'intent-a',
     })
-    expect(runtime.calls[0]?.body.authorizationRef).not.toBe('forged')
-    expect(runtime.calls[0]?.body).not.toHaveProperty('authorizationBinding')
+    expect(runtime.calls[1]?.body.authorizationRef).not.toBe('forged')
+    expect(runtime.calls[1]?.body).not.toHaveProperty('authorizationBinding')
+    await hanaworlds.call('session-a', 'StartOrResumeSession', { requestId: 'start' })
+    expect(runtime.calls[2]?.body).not.toHaveProperty('worldRef')
   })
 
   it('rejects revoked and regranted old bindings before calling Workshop', async () => {

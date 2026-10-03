@@ -44,6 +44,7 @@ const allowedOperations = new Set([
   'PersistRequiredArtifactResources',
   'ReopenExistingArtifact',
 ])
+const worldRefOperations = new Set(['SwitchWorldContext', 'ListObjects', 'CreateBuildPlan'])
 
 export const hanaworlds = defineService({
   async context(sessionRef?: string) {
@@ -108,7 +109,7 @@ export const hanaworlds = defineService({
     if (typeof workshop?.call !== 'function')
       throw new Error('WORKSHOP_UNAVAILABLE')
     const body: Record<string, unknown> = { ...payload, actorRef: binding.actorRef, sessionRef: binding.sessionRef, authorizationRef: binding.authorizationRef }
-    if ('worldRef' in body)
+    if (worldRefOperations.has(operation) || 'worldRef' in body)
       body.worldRef = binding.worldRef
     delete body.authorizationBinding
     return workshop.call(operation, body)
