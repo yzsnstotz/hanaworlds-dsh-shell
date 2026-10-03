@@ -2,9 +2,13 @@ import type { ConnectionHost, HostContext } from './types'
 import process from 'node:process'
 import { PLUGIN_ID } from '../shared/constants'
 import { clearHostRuntime, setCurrentHostInstance } from './config/runtime'
+import { hanaworldsRoutes } from './routes/hanaworlds'
 import { gate } from './service/gate'
+import { hanaworlds } from './service/hanaworlds'
 
 const GATE_EFFECT = `${PLUGIN_ID}: gate`
+const HANAWORLDS_ROUTES_EFFECT = `${PLUGIN_ID}: hanaworlds routes`
+const HANAWORLDS_RUNTIME_EFFECT = `${PLUGIN_ID}: hanaworlds bindings`
 const ACCOUNT_EFFECT = `${PLUGIN_ID}: account desktop marker`
 const HOST_RUNTIME_EFFECT = `${PLUGIN_ID}: host runtime`
 
@@ -30,6 +34,13 @@ export function apply(ctx: HostContext): void {
   setCurrentHostInstance(ctx as unknown as ConnectionHost)
 
   ctx.effect(() => gate.attach(), GATE_EFFECT)
+  ctx.provide('hanaworldsAuthority', {
+    verify: hanaworlds.verify,
+    verifyEngineBinding: hanaworlds.verifyEngineBinding,
+    verifyService: hanaworlds.verifyService,
+  })
+  ctx.effect(() => hanaworldsRoutes(ctx), HANAWORLDS_ROUTES_EFFECT)
+  ctx.effect(() => () => hanaworlds.clear(), HANAWORLDS_RUNTIME_EFFECT)
   if (process.env.DSH_TAURI_EMBEDDED === '1') {
     ctx.effect(() => ctx.on('webserver/index-inject', (table) => {
       table.push({ kind: 'script', placement: 'head', text: ACCOUNT_MARKER_SCRIPT })

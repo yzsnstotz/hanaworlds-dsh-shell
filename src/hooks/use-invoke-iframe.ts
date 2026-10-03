@@ -56,6 +56,7 @@ const ALLOWED_INVOKE_CMDS = new Set([
   'list_preset_pets',
   'remote_bridge_ping',
   'remote_open_window',
+  'hanaworlds_request',
 ])
 
 export function useInvokeIframe(iframeRef: RefObject<HTMLIFrameElement | null>): void {

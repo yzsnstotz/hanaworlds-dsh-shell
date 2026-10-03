@@ -20,6 +20,7 @@ import { queryKeys } from '@/config/query-keys'
 import { useListen } from '@/hooks/use-listen'
 import { store } from '@/store'
 import { parseBlockedRefusal } from '@/store/modules/preinstall'
+import { HanaWorldsBinding } from '@/ui/config/hanaworlds'
 import { silence } from '@/utils/silence'
 import { toast } from '@/utils/toast'
 
@@ -714,6 +715,8 @@ export function ConfigPlugin() {
         )}
         description={t('plugins.panel_tooltip')}
       />
+
+      <HanaWorldsBinding />
 
       {/* 加载 / 失败 / 空态 */}
       <Panel.Loadable loading={loading} error={error}>

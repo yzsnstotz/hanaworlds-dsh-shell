@@ -1062,6 +1062,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::quarantine_broken_patch_layers,
         crate::bridge::strip_unresolved_patch_entries,
         crate::bridge::get_dsh_status,
+        crate::bridge::hanaworlds_request,
         crate::bridge::is_dev_build,
         crate::bridge::get_preinstall_plugins,
         crate::bridge::get_preinstall_pending,
