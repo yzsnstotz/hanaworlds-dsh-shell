@@ -4,6 +4,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd -P)"
 case "$repo" in "$HOME/.cache/hanaworlds-runs/S1-SHELL-CLIENT-UPGRADE-01/"*) ;; *) echo 'Build only an isolated source copy under ~/.cache/hanaworlds-runs/S1-SHELL-CLIENT-UPGRADE-01/' >&2; exit 1 ;; esac
 cd "$repo"
+export CARGO_TARGET_DIR="$repo/src-tauri/target"
 
 [ "$#" -eq 1 ] || { echo 'Usage: hanaworlds-build-macos.sh <exact public dsh-pkg tag>' >&2; exit 1; }
 dsh_tag="$1"
