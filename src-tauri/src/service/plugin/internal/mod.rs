@@ -338,7 +338,9 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         );
         return Ok(());
     }
-    prune_dangling_link_deps(app_handle, &internal);
+    if !cfg!(feature = "hanaworlds-product") {
+        prune_dangling_link_deps(app_handle, &internal);
+    }
     if internal.is_empty() {
         return Ok(());
     }
@@ -357,7 +359,9 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
         "PROFILE_NOT_WRITABLE",
     )?;
 
-    repair_loader_state(app_handle)?;
+    if !cfg!(feature = "hanaworlds-product") {
+        repair_loader_state(app_handle)?;
+    }
     let outcome =
         receive_current_or_next_flight(|| subscribe_or_start(app_handle, &internal)).await;
     if outcome.is_ok() {
@@ -656,31 +660,33 @@ async fn ensure_inner(
     // 旧工作目录留下的 profile 可能含重复 bundle；先做幂等迁移，避免在
     // 检查依赖正常时直接进入 Cordis 并触发 duplicate loader entry。
     let mut migrated = false;
-    if let Some(value) = manifest.as_mut() {
-        migrated = dedupe_profile_bundles(value);
-    }
-
-    let bundle_ids: HashSet<&str> = internal.iter().map(|preset| preset.id.as_str()).collect();
-    let patch_path = profile.join("cordis.patch.yml");
-    let mut patch = std::fs::read_to_string(&patch_path)
-        .ok()
-        .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok());
-    if let Some(value) = patch.as_mut() {
-        if remove_duplicate_bundle_entries_from_patch(value, &bundle_ids) {
-            let rendered = serde_yaml::to_string(value)
-                .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_RENDER_FAILED: {e}"))?;
-            std::fs::write(&patch_path, rendered)
-                .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_WRITE_FAILED: {e}"))?;
-            migrated = true;
-            log::warn!(
-                "INTERNAL_PLUGIN_PROFILE_MIGRATED: removed duplicate bundle entries from {}",
-                patch_path.display()
-            );
+    if !cfg!(feature = "hanaworlds-product") {
+        if let Some(value) = manifest.as_mut() {
+            migrated = dedupe_profile_bundles(value);
         }
-    }
-    if migrated {
-        if let Some(value) = manifest.as_ref() {
-            write_profile_manifest(&manifest_path, value)?;
+
+        let bundle_ids: HashSet<&str> = internal.iter().map(|preset| preset.id.as_str()).collect();
+        let patch_path = profile.join("cordis.patch.yml");
+        let mut patch = std::fs::read_to_string(&patch_path)
+            .ok()
+            .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok());
+        if let Some(value) = patch.as_mut() {
+            if remove_duplicate_bundle_entries_from_patch(value, &bundle_ids) {
+                let rendered = serde_yaml::to_string(value)
+                    .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_RENDER_FAILED: {e}"))?;
+                std::fs::write(&patch_path, rendered)
+                    .map_err(|e| format!("INTERNAL_PLUGIN_PATCH_WRITE_FAILED: {e}"))?;
+                migrated = true;
+                log::warn!(
+                    "INTERNAL_PLUGIN_PROFILE_MIGRATED: removed duplicate bundle entries from {}",
+                    patch_path.display()
+                );
+            }
+        }
+        if migrated {
+            if let Some(value) = manifest.as_ref() {
+                write_profile_manifest(&manifest_path, value)?;
+            }
         }
     }
 
@@ -690,6 +696,9 @@ async fn ensure_inner(
     let mut orphans: Vec<String> = Vec::new();
     for preset in internal {
         let Some(bundled) = bundled_plugin_dir(app_handle, &preset.id) else {
+            if cfg!(feature = "hanaworlds-product") {
+                return Err(format!("HANAWORLDS_BUNDLED_PLUGIN_MISSING: {}", preset.id));
+            }
             // 未找到内置插件目录：release 说明构建期 build:plugins 未打包（发布
             // 缺陷，由 build:plugins 响亮失败）；debug 自动发现 packages/* 中非私有
             // 且含 dsh 对象的包，未命中时跳过（「找不到则不装」）。
@@ -784,8 +793,15 @@ async fn ensure_inner(
     // 「Plugin installation 阶段失败：INTERNAL_PLUGIN_FALLBACK_REMOVE_FAILED」，
     // 把「档案目录权限不可写」这个真正要修的问题掩盖掉。与孤儿卸载「任何失败
     // 只记告警」的约定一致；安装失败分支同样忽略该错误。
-    remove_legacy_profile_module_fallback_best_effort(&profile);
+    if !cfg!(feature = "hanaworlds-product") {
+        remove_legacy_profile_module_fallback_best_effort(&profile);
+    }
     if need.is_empty() {
+        return Ok(());
+    }
+
+    if cfg!(feature = "hanaworlds-product") {
+        materialize_internal_links(app_handle, &profile, &need)?;
         return Ok(());
     }
 

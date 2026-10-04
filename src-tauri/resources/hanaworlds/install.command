@@ -1,11 +1,13 @@
 #!/bin/bash
 set -euo pipefail
+umask 077
 
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 default_candidate="$(cd "$script_dir/../../../.." && pwd -P)"
 candidate="${1:-$default_candidate}"
 install_root="${2:-/Applications}"
 backup_root="${3:-$HOME/.cache/hanaworlds-runs/client-upgrade-backups}"
+data_root="${4:-$HOME/.hanaworlds}"
 
 fail() {
   echo "HanaWorlds installer: $*" >&2
@@ -62,12 +64,17 @@ target="$install_root/HanaWorlds.app"
 [ ! -L "$backup_root" ] || fail "backup root is a symlink"
 mkdir -p "$backup_root"
 backup_root="$(cd "$backup_root" && pwd -P)"
+/bin/chmod 700 "$backup_root"
+[ ! -L "$data_root" ] || fail "profile root is a symlink"
 
 rollback_mode=0
 if [ "$candidate" = rollback ]; then
   rollback_mode=1
   [ -f "$backup_root/last" ] || fail "no previous app backup"
   candidate="$(cat "$backup_root/last")"
+  case "$candidate" in "$backup_root"/previous.*/HanaWorlds.app) ;; *) fail "backup path is outside backup root" ;; esac
+  source_backup="$(dirname "$candidate")"
+  [ -f "$source_backup/profile-present" ] || [ -f "$source_backup/profile-absent" ] || fail "previous profile snapshot missing"
 fi
 
 candidate="$(cd "$candidate" && pwd -P)"
@@ -77,10 +84,15 @@ verify_replacement "$candidate"
 stage="$(/usr/bin/mktemp -d "$install_root/.HanaWorlds-stage.XXXXXX")"
 backup="$(/usr/bin/mktemp -d "$backup_root/previous.XXXXXX")"
 swapped=0
+data_swapped=0
 cleanup() {
   if [ "$swapped" = 1 ]; then
     /bin/rm -rf "$target"
     /bin/mv "$stage/previous.app" "$target"
+  fi
+  if [ "$data_swapped" = 1 ]; then
+    /bin/rm -rf "$data_root"
+    /bin/mv "$backup/newer-data" "$data_root"
   fi
   /bin/rm -rf "$stage"
 }
@@ -90,11 +102,32 @@ trap cleanup EXIT
 verify_replacement "$stage/HanaWorlds.app"
 /usr/bin/ditto "$target" "$backup/HanaWorlds.app"
 [ "$(identity "$backup/HanaWorlds.app")" = HanaWorlds ] || fail "backup identity mismatch"
+if [ -d "$data_root" ]; then
+  /usr/bin/ditto "$data_root" "$backup/profile"
+  /usr/bin/touch "$backup/profile-present"
+elif [ ! -e "$data_root" ]; then
+  /usr/bin/touch "$backup/profile-absent"
+else
+  fail "profile root is not a directory"
+fi
+if [ "$rollback_mode" = 1 ] && [ -f "$source_backup/profile-present" ]; then
+  /usr/bin/ditto "$source_backup/profile" "$stage/restore-profile"
+fi
 /bin/mv "$target" "$stage/previous.app"
 swapped=1
 /bin/mv "$stage/HanaWorlds.app" "$target"
 verify_replacement "$target"
-swapped=0
+if [ "$rollback_mode" = 1 ]; then
+  if [ -d "$data_root" ]; then
+    /bin/mv "$data_root" "$backup/newer-data"
+    data_swapped=1
+  fi
+  if [ -f "$source_backup/profile-present" ]; then
+    /bin/mv "$stage/restore-profile" "$data_root"
+  fi
+fi
 printf '%s\n' "$backup/HanaWorlds.app" > "$backup_root/last.tmp"
 /bin/mv "$backup_root/last.tmp" "$backup_root/last"
+swapped=0
+data_swapped=0
 echo "HanaWorlds installer: updated $target; rollback backup $backup/HanaWorlds.app"

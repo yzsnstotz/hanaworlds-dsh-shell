@@ -5,9 +5,9 @@ use crate::config;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
 #[cfg(not(windows))]
 use std::io::Read;
+use std::path::Path;
 #[cfg(not(windows))]
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -46,7 +46,12 @@ type SpawnResult = Result<
 /// 复用配置端口；到期仍未释放才按“真占用”逐级递增。
 const PORT_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
-fn build_harness_args(dsh_binary: &Path, profile: &str, port: u16, heap_mb: Option<u32>) -> Vec<OsString> {
+fn build_harness_args(
+    dsh_binary: &Path,
+    profile: &str,
+    port: u16,
+    heap_mb: Option<u32>,
+) -> Vec<OsString> {
     let mut args = Vec::with_capacity(7);
     args.extend(super::heap::heap_option_arg(heap_mb));
     args.extend([
@@ -459,8 +464,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 弃用插件自动卸载：`manifest.jsonc` 的 `plugins.depercated` 登记的社区插件若已安装，启动时
     // 自动移除（避免残留插件继续在 profile 里加载、甚至导致启动失败）。最佳努力：
     // 失败只告警，不阻断启动。
-    if let Err(e) = crate::service::plugin::uninstall_deprecated_plugins(&app_handle).await {
-        log::warn!("uninstall deprecated plugins failed: {e}");
+    if !cfg!(feature = "hanaworlds-product") {
+        if let Err(e) = crate::service::plugin::uninstall_deprecated_plugins(&app_handle).await {
+            log::warn!("uninstall deprecated plugins failed: {e}");
+        }
     }
     mark_phase("deprecated_plugins", &mut phase_started);
     // 内置插件自愈：随包分发的内置插件（dsh-tauri 等）必须在服务进程加载插件
@@ -468,6 +475,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 或用户卸载后重启，一律强制重装（见 service::plugin::internal）。最佳
     // 努力：失败只告警，不阻断启动（核心功能缺失是发布缺陷，由 build:plugins 报错）。
     if let Err(e) = crate::service::plugin::ensure_internal_plugins(&app_handle).await {
+        if cfg!(feature = "hanaworlds-product") {
+            return Err(e);
+        }
         log::warn!("ensure internal plugins failed: {e}");
     }
     mark_phase("ensure_internal_plugins", &mut phase_started);
@@ -477,6 +487,9 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // lockfile 为准重建依赖图修复；修复失败只告警并给缺失插件记录错误标记
     // （启动失败场景由前端 recovery 对话框兜底，见 service::plugin::recovery）。
     if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
+        if cfg!(feature = "hanaworlds-product") {
+            return Err(e);
+        }
         log::warn!("ensure preset plugins failed: {e}");
     }
     mark_phase("ensure_preset_plugins", &mut phase_started);
@@ -662,7 +675,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 GetExitCodeProcess, WaitForSingleObject, INFINITE,
             };
 
-            let args = build_harness_args(&dsh_binary_path, active_profile.as_str(), setting.port, heap_mb);
+            let args = build_harness_args(
+                &dsh_binary_path,
+                active_profile.as_str(),
+                setting.port,
+                heap_mb,
+            );
 
             // 只负责 spawn 并返回管道/PID/句柄：探测与重试期间不登记、不挂
             // 监视线程——只有最终采用的那个进程才登记，否则旧监视线程会通过
@@ -765,7 +783,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         {
             use std::os::unix::process::CommandExt;
             let mut cmd = Command::new(&node_binary_path);
-            cmd.args(build_harness_args(&dsh_binary_path, active_profile.as_str(), setting.port, heap_mb));
+            cmd.args(build_harness_args(
+                &dsh_binary_path,
+                active_profile.as_str(),
+                setting.port,
+                heap_mb,
+            ));
             cmd.envs(&envs)
                 .current_dir(&core_dir)
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
@@ -801,7 +824,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                                         );
                                         reset_active_profile_root(&app_handle);
                                         cmd = Command::new(&node_binary_path);
-                                        cmd.args(build_harness_args(&dsh_binary_path, active_profile.as_str(), setting.port, heap_mb));
+                                        cmd.args(build_harness_args(
+                                            &dsh_binary_path,
+                                            active_profile.as_str(),
+                                            setting.port,
+                                            heap_mb,
+                                        ));
                                         cmd.envs(&envs)
                                             .current_dir(&core_dir)
                                             .stdin(Stdio::null())

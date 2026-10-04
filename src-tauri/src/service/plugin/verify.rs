@@ -101,6 +101,9 @@ pub(crate) async fn ensure_preset_plugins(app_handle: &AppHandle) -> Result<(), 
         "PRESET_PLUGIN_INTEGRITY: {} preset plugin(s) referenced by profile but missing from node_modules: {missing:?}",
         missing.len()
     );
+    if cfg!(feature = "hanaworlds-product") {
+        return Err(format!("HANAWORLDS_PROFILE_PLUGIN_MISSING: {missing:?}"));
+    }
 
     // 修复：在 profile 目录以现有 manifest + lockfile 为准执行 `pnpm install`，
     // 重建 node_modules 依赖图（不解析新版本）。修复失败不阻断启动，给缺失插件
