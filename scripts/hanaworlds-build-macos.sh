@@ -14,6 +14,7 @@ recommended="$(node --input-type=module -e 'import { readRecommendedDshVersion }
 case "$dsh_tag" in "dsh-$recommended-"[0-9]*) ;; *) echo "Tag must match recommended dsh $recommended" >&2; exit 1 ;; esac
 
 platform=macos
+product_node_version=24.13.1
 case "$(uname -m)" in arm64) arch=arm64 ;; x86_64) arch=x64 ;; *) echo 'Unsupported Mac architecture' >&2; exit 1 ;; esac
 command -v node >/dev/null || { echo 'Build machine needs Node.js' >&2; exit 1; }
 command -v cargo >/dev/null || { echo 'Build machine needs Rust/Cargo' >&2; exit 1; }
@@ -27,6 +28,11 @@ verify() { [ -n "$2" ] && [ "$(sha256 "$1")" = "$2" ] || { echo "SHA-256 mismatc
 
 while IFS='|' read -r key name url digest sha_url; do
   [ -n "$key" ] || continue
+  if [ "$key" = node ]; then
+    name="node-v${product_node_version}-darwin-${arch}.tar.gz"
+    url="https://nodejs.org/dist/v${product_node_version}/${name}"
+    sha_url="https://nodejs.org/dist/v${product_node_version}/SHASUMS256.txt"
+  fi
   archive="$work/$name"
   fetch "$url" "$archive"
   case "$key" in
@@ -60,6 +66,7 @@ done
 
 node_bin="$repo/src-tauri/resources/node/bin/node"
 pnpm_bin="$repo/src-tauri/resources/pnpm/bin/pnpm.cjs"
+[ "$("$node_bin" --version)" = "v${product_node_version}" ] || { echo 'Bundled HanaWorlds Node version mismatch' >&2; exit 1; }
 printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$node_bin" "$pnpm_bin" > "$work/pnpm"
 chmod +x "$work/pnpm"
 export PATH="$work:$repo/src-tauri/resources/node/bin:$PATH"
@@ -68,6 +75,7 @@ source_sha="$(git rev-parse HEAD)"
 build_id="$(printf '%s\n%s\n%s\n' "$source_sha" "$dsh_tag" "$(sha256 src-tauri/resources/manifest.jsonc)" | shasum -a 256 | awk '{print $1}')"
 printf '%s\n' "$build_id" > src-tauri/resources/hanaworlds/build-id.txt
 export HANAWORLDS_BUILD_ID="$build_id"
+export VITE_HANAWORLDS_PRODUCT=1
 "$node_bin" "$pnpm_bin" install --frozen-lockfile
 "$node_bin" "$pnpm_bin" tauri build --config src-tauri/tauri.hanaworlds.conf.json --features hanaworlds-product --bundles app
 

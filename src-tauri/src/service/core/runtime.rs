@@ -239,6 +239,9 @@ pub(crate) async fn prepare_active_runtime(app_handle: &AppHandle) -> Result<(),
     // 档案里的核心包残留必须在 dsh 启动前清掉：Node 从 profile 目录向上查找裸包时
     // 会先命中它，核心自带的正确版本反而被跳过。清理失败不影响后续原生探测。
     if let Err(e) = prune_stale_core_packages(app_handle, &core_root) {
+        if cfg!(feature = "hanaworlds-product") {
+            return Err(e);
+        }
         log::warn!("{e}");
     }
 
@@ -437,6 +440,41 @@ fn prune_stale_core_entries(
             continue;
         };
         if profile_version == anchor_version {
+            continue;
+        }
+        if cfg!(feature = "hanaworlds-product") {
+            let snapshot = profile_root.join(".hanaworlds-client-migration");
+            let stale_core = snapshot.join("stale-core");
+            for directory in [&snapshot, &stale_core] {
+                match std::fs::symlink_metadata(directory) {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                    Ok(_) => return Err("HANAWORLDS_STALE_CORE_SNAPSHOT_INVALID".to_string()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        std::fs::create_dir(directory).map_err(|error| {
+                            format!("HANAWORLDS_STALE_CORE_SNAPSHOT_MKDIR: {error}")
+                        })?;
+                    }
+                    Err(error) => {
+                        return Err(format!("HANAWORLDS_STALE_CORE_SNAPSHOT_STAT: {error}"))
+                    }
+                }
+                #[cfg(unix)]
+                std::fs::set_permissions(
+                    directory,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o700),
+                )
+                .map_err(|error| format!("HANAWORLDS_STALE_CORE_SNAPSHOT_CHMOD: {error}"))?;
+            }
+            let saved = stale_core.join(entry.file_name());
+            if std::fs::symlink_metadata(&saved).is_ok() {
+                return Err(format!(
+                    "HANAWORLDS_STALE_CORE_SNAPSHOT_EXISTS: {}",
+                    saved.display()
+                ));
+            }
+            std::fs::rename(&path, &saved)
+                .map_err(|e| format!("HANAWORLDS_STALE_CORE_SNAPSHOT_MOVE: {e}"))?;
+            log::info!("HANAWORLDS_STALE_CORE_PRESERVED: {name} {profile_version}");
             continue;
         }
         if let Err(e) = remove_core_package_residue(&path) {
@@ -1991,6 +2029,13 @@ mod tests {
                 .exists(),
             "mismatched undeclared core package must be removed from the profile"
         );
+        if cfg!(feature = "hanaworlds-product") {
+            assert!(
+                root.join("profiles/tauri/.hanaworlds-client-migration/stale-core/dsh-settings/package.json")
+                    .is_file(),
+                "HanaWorlds must preserve the old core package in the same profile"
+            );
+        }
         assert!(
             anchor_modules
                 .join("@deepseek-ai/dsh-settings/package.json")

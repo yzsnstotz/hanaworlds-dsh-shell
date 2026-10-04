@@ -66,6 +66,9 @@ mkdir -p "$backup_root"
 backup_root="$(cd "$backup_root" && pwd -P)"
 /bin/chmod 700 "$backup_root"
 [ ! -L "$data_root" ] || fail "profile root is a symlink"
+data_parent="$(cd "$(dirname "$data_root")" && pwd -P)"
+case "$backup_root" in "$data_root"|"$data_root"/*) fail "backup root must be outside profile root" ;; esac
+[ "$(/usr/bin/stat -f %d "$backup_root")" = "$(/usr/bin/stat -f %d "$data_parent")" ] || fail "profile backup must be on the same APFS volume"
 
 rollback_mode=0
 if [ "$candidate" = rollback ]; then
@@ -85,6 +88,8 @@ stage="$(/usr/bin/mktemp -d "$install_root/.HanaWorlds-stage.XXXXXX")"
 backup="$(/usr/bin/mktemp -d "$backup_root/previous.XXXXXX")"
 swapped=0
 data_swapped=0
+committed=0
+restore_stage=""
 cleanup() {
   if [ "$swapped" = 1 ]; then
     /bin/rm -rf "$target"
@@ -95,6 +100,12 @@ cleanup() {
     /bin/mv "$backup/newer-data" "$data_root"
   fi
   /bin/rm -rf "$stage"
+  if [ -n "$restore_stage" ]; then
+    /bin/rm -rf "$restore_stage"
+  fi
+  if [ "$committed" = 0 ]; then
+    /bin/rm -rf "$backup"
+  fi
 }
 trap cleanup EXIT
 
@@ -103,7 +114,7 @@ verify_replacement "$stage/HanaWorlds.app"
 /usr/bin/ditto "$target" "$backup/HanaWorlds.app"
 [ "$(identity "$backup/HanaWorlds.app")" = HanaWorlds ] || fail "backup identity mismatch"
 if [ -d "$data_root" ]; then
-  /usr/bin/ditto "$data_root" "$backup/profile"
+  /bin/cp -cR "$data_root" "$backup/profile" || fail "APFS clone of original profile failed; installed app unchanged"
   /usr/bin/touch "$backup/profile-present"
 elif [ ! -e "$data_root" ]; then
   /usr/bin/touch "$backup/profile-absent"
@@ -111,7 +122,8 @@ else
   fail "profile root is not a directory"
 fi
 if [ "$rollback_mode" = 1 ] && [ -f "$source_backup/profile-present" ]; then
-  /usr/bin/ditto "$source_backup/profile" "$stage/restore-profile"
+  restore_stage="$(/usr/bin/mktemp -d "$data_parent/.HanaWorlds-data-stage.XXXXXX")"
+  /bin/cp -cR "$source_backup/profile" "$restore_stage/profile" || fail "APFS clone of rollback profile failed; installed app unchanged"
 fi
 /bin/mv "$target" "$stage/previous.app"
 swapped=1
@@ -123,11 +135,12 @@ if [ "$rollback_mode" = 1 ]; then
     data_swapped=1
   fi
   if [ -f "$source_backup/profile-present" ]; then
-    /bin/mv "$stage/restore-profile" "$data_root"
+    /bin/mv "$restore_stage/profile" "$data_root"
   fi
 fi
 printf '%s\n' "$backup/HanaWorlds.app" > "$backup_root/last.tmp"
 /bin/mv "$backup_root/last.tmp" "$backup_root/last"
+committed=1
 swapped=0
 data_swapped=0
 echo "HanaWorlds installer: updated $target; rollback backup $backup/HanaWorlds.app"

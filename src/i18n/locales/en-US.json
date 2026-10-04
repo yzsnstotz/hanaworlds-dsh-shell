@@ -53,6 +53,7 @@
   "preinstall.granting": "Granting…",
   "plugins.title": "Installed Plugins",
   "hanaworlds.binding_title": "HanaWorlds current world binding",
+  "hanaworlds.legacy_migration_notice": "If this client migrated a legacy profile, its original plugin registrations and configuration are saved in that profile. Incompatible legacy mounts stay inactive. The bundled installer can restore the previous app and data with rollback.",
   "hanaworlds.binding_unavailable": "The current session cannot yet be reliably linked to an in-game grant. Building is unavailable.",
   "hanaworlds.host_unavailable": "The HanaWorlds host is unavailable.",
   "hanaworlds.evidence_unavailable": "Current in-game grant evidence is unavailable.",

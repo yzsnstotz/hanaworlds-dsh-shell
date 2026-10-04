@@ -53,6 +53,7 @@
   "preinstall.granting": "正在授权…",
   "plugins.title": "已安装插件",
   "hanaworlds.binding_title": "HanaWorlds 当前世界绑定",
+  "hanaworlds.legacy_migration_notice": "若本客户端迁移了旧 profile，原插件登记与配置会保存在该 profile 内；不兼容的旧挂载暂不运行。可用应用包内安装器 rollback 恢复旧入口与原数据。",
   "hanaworlds.binding_unavailable": "当前会话与游戏内授权尚无法可信关联，建造不可用。",
   "hanaworlds.host_unavailable": "HanaWorlds 宿主尚不可用。",
   "hanaworlds.evidence_unavailable": "游戏端的当前授权证明尚不可用。",

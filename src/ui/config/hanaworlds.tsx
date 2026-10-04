@@ -3,6 +3,7 @@ import { useMount } from '@reause/core'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { If } from 'react-if-lite'
 
 interface Context {
   status: 'bound' | 'unbound' | 'unavailable'
@@ -73,6 +74,11 @@ export function HanaWorldsBinding() {
           {t('hanaworlds.refresh')}
         </Button>
       </div>
+      <If cond={import.meta.env.VITE_HANAWORLDS_PRODUCT === '1'}>
+        <p className="m-0 mt-2 text-xs text-warning" data-testid="hanaworlds-legacy-migration-notice">
+          {t('hanaworlds.legacy_migration_notice')}
+        </p>
+      </If>
       <p className="m-0 mt-1 text-xs text-muted">
         {context?.status === 'bound'
           ? t('hanaworlds.bound', { player: context.engineActorName, world: context.worldRef })
