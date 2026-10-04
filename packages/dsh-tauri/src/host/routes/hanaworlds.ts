@@ -75,7 +75,7 @@ export const hanaworldsRoutes = defineRoutes((routes) => {
         event.res.status = 409
         return { error: reason }
       }
-      if (reason === 'SESSION_PERSISTENCE_UNAVAILABLE' || reason === 'SESSION_FLUSH_UNAVAILABLE'
+      if (reason === 'WORKSHOP_UNAVAILABLE' || reason === 'SESSION_PERSISTENCE_UNAVAILABLE' || reason === 'SESSION_FLUSH_UNAVAILABLE'
         || reason === 'SESSION_READ_INVALID' || reason === 'CONFIRMATION_NOT_DURABLE'
         || reason === 'CONFIRMATION_WRITE_FAILED') {
         event.res.status = 503

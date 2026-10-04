@@ -24,11 +24,11 @@ function host() {
       },
     },
   }
-  const sessions = new Set(['session-a'])
+  const sessions = new Map([['session-a', { id: 'session-a' }]])
   setCurrentHostInstance({
     sessions: {
-      get: (id: string) => sessions.has(id) ? { id } : undefined,
-      list: () => [...sessions].map(id => ({ id })),
+      get: (id: string) => sessions.get(id),
+      list: () => [...sessions.values()],
     },
     get: (name: string) => services[name],
   } as never)
@@ -375,5 +375,167 @@ describe('hanaWorlds durable confirmation', () => {
     await expect(hanaworlds.call('session-a', 'AnswerClarification', confirmation)).rejects.toThrow('SESSION_OR_GRANT_CHANGED')
     expect(runtime.stored()).toHaveLength(1)
     expect(runtime.calls).toHaveLength(0)
+  })
+})
+
+const undoStatus = { contractVersion: 'session/v2', requestId: 'undo-status-1' }
+const undoBuild = { ...undoStatus, requestId: 'undo-1', expectedTurnRevision: 'turn-rev-1', expectedHistoryRevision: 'history-rev-1' }
+
+describe('hanaWorlds trusted undo bridge', () => {
+  it.each(['ReadCurrentUndoStatus', 'UndoCurrentBuild'])('forwards %s with host identity and explicit history/undo authority', async (operation) => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    const payload = operation === 'UndoCurrentBuild' ? undoBuild : undoStatus
+    await expect(hanaworlds.call('session-a', operation, payload)).resolves.toEqual({ ok: true })
+    const body = runtime.calls[0]!.body
+    expect(body).toEqual({ ...payload, actorRef: 'luanti:player-a', sessionRef: 'session-a', worldRef: firstGrant.worldRef, authorizationRef: expect.any(String) })
+    const proof = await hanaworlds.verify(body)
+    expect(proof).toMatchObject({ current: true, worldRef: firstGrant.worldRef, allowedActions: expect.arrayContaining(['HISTORY', 'UNDO']) })
+    runtime.revoke()
+    await expect(hanaworlds.verify(body)).resolves.toEqual({ current: false })
+    runtime.regrant()
+    await expect(hanaworlds.verify(body)).resolves.toEqual({ current: false })
+  })
+
+  it.each([['ReadCurrentUndoStatus', 'HISTORY'], ['UndoCurrentBuild', 'UNDO']])('does not classify %s as READ', async (operation, action) => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', operation!, operation === 'UndoCurrentBuild' ? undoBuild : undoStatus)
+    await expect(hanaworlds.verify(runtime.calls[0]!.body, operation)).resolves.toMatchObject({ current: true, allowedActions: [action] })
+  })
+
+  it('keeps a new binding when an old in-flight proof completes', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    let resolve!: (value: typeof firstGrant) => void
+    let checked!: () => void
+    const started = new Promise<void>((done) => {
+      checked = done
+    })
+    const evidence = {
+      listCurrentLocalGrants: async () => [firstGrant],
+      verifyCurrentLocalGrant: async () => {
+        checked()
+        return new Promise<typeof firstGrant>((done) => {
+          resolve = done
+        })
+      },
+    }
+    runtime.services.hanaworldsLuantiGrantEvidence = evidence
+    const pending = hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)
+    const rejected = expect(pending).rejects.toThrow('TRUSTED_BINDING_REQUIRED')
+    await started
+    evidence.verifyCurrentLocalGrant = async () => firstGrant
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    resolve(firstGrant)
+    await rejected
+    expect(runtime.calls).toHaveLength(0)
+    await expect(hanaworlds.call('session-a', 'ReadCurrentUndoStatus', undoStatus)).resolves.toEqual({ ok: true })
+  })
+
+  it('checks the acting principal on Adapter engine binding rather than its Canvas service actor', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)
+    const body = { ...runtime.calls[0]!.body, actorRef: 'canvas-service', authorizationBinding: { actorRef: 'luanti:player-a' } }
+    await expect(hanaworlds.verifyEngineBinding(body)).resolves.toMatchObject({ current: true, actorRef: 'luanti:player-a', allowedActions: expect.arrayContaining(['UNDO']) })
+    await expect(hanaworlds.verifyEngineBinding({ ...body, authorizationBinding: { actorRef: 'forged' } })).resolves.toEqual({ current: false })
+  })
+
+  it.each(['actorRef', 'sessionRef', 'worldRef', 'authorizationRef', 'authorizationBinding', 'nativeGrantRef', 'objectRef', 'transactionId', 'headTransactionId', 'turnRef', 'allowedActions'])('rejects caller supplied %s before forwarding undo', async (key) => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', { ...undoBuild, [key]: 'forged' })).rejects.toThrow('WORKSHOP_OPERATION_INVALID')
+    expect(runtime.calls).toHaveLength(0)
+  })
+
+  it.each([
+    ['ReadCurrentUndoStatus', { ...undoStatus, expectedHistoryRevision: 'extra' }],
+    ['ReadCurrentUndoStatus', { ...undoStatus, contractVersion: 'session/v1' }],
+    ['ReadCurrentUndoStatus', { ...undoStatus, requestId: '' }],
+    ['UndoCurrentBuild', undoStatus],
+    ['UndoCurrentBuild', { ...undoBuild, expectedTurnRevision: '' }],
+    ['UndoCurrentBuild', { ...undoBuild, expectedHistoryRevision: 1 }],
+    ['Undo', undoBuild],
+    ['RedoCurrentBuild', undoBuild],
+  ])('rejects invalid typed input for %s', async (operation, payload) => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await expect(hanaworlds.call('session-a', operation as string, payload as Record<string, unknown>)).rejects.toThrow('WORKSHOP_OPERATION_INVALID')
+    expect(runtime.calls).toHaveLength(0)
+  })
+
+  it.each(['revoke', 'regrant', 'disconnect', 'replace-session', 'world'])('rejects undo after %s', async (change) => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    if (change === 'revoke')
+      runtime.revoke()
+    if (change === 'regrant')
+      runtime.regrant()
+    if (change === 'disconnect')
+      runtime.sessions.clear()
+    if (change === 'replace-session')
+      runtime.sessions.set('session-a', { id: 'session-a' })
+    if (change === 'world')
+      runtime.services.hanaworldsLuantiGrantEvidence = { listCurrentLocalGrants: async () => [], verifyCurrentLocalGrant: async () => ({ ...firstGrant, worldRef: 'world-b' }) }
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)).rejects.toThrow('TRUSTED_BINDING_REQUIRED')
+    expect(runtime.calls).toHaveLength(0)
+  })
+
+  it('rejects a Session disappearing during the asynchronous grant check', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    runtime.services.hanaworldsLuantiGrantEvidence = {
+      listCurrentLocalGrants: async () => [firstGrant],
+      verifyCurrentLocalGrant: async () => {
+        runtime.sessions.clear()
+        return firstGrant
+      },
+    }
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)).rejects.toThrow('TRUSTED_BINDING_REQUIRED')
+    expect(runtime.calls).toHaveLength(0)
+  })
+
+  it('does not authorize forged actors or old authorization references', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'ReadCurrentUndoStatus', undoStatus)
+    const body = runtime.calls[0]!.body
+    await expect(hanaworlds.verify({ ...body, actorRef: 'forged' })).resolves.toEqual({ current: false })
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await expect(hanaworlds.verify(body)).resolves.toEqual({ current: false })
+  })
+
+  it('preserves typed Workshop denial and rejects unavailable or throwing Workshop', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    const denied = { contractVersion: 'session/v2', requestId: undoBuild.requestId, result: null, error: { code: 'AUTHORIZATION_REVOKED', stage: 'authorize', reason: 'GRANT_REVOKED' } }
+    runtime.services.hanaworldsWorkshop = { call: async () => denied }
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)).resolves.toEqual(denied)
+    runtime.services.hanaworldsWorkshop = { call: async () => {
+      throw new Error('WORKSHOP_DENIED')
+    } }
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)).rejects.toThrow('WORKSHOP_DENIED')
+    delete runtime.services.hanaworldsWorkshop
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)).rejects.toThrow('WORKSHOP_UNAVAILABLE')
+  })
+})
+
+describe('hanaWorlds undo result release', () => {
+  it.each(['revoke', 'rebind', 'disconnect', 'replace-workshop'])('does not release a stale success after %s while Workshop is pending', async (change) => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    runtime.services.hanaworldsWorkshop = { call: async () => {
+      if (change === 'revoke')
+        runtime.revoke()
+      if (change === 'rebind')
+        await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+      if (change === 'disconnect')
+        runtime.sessions.clear()
+      if (change === 'replace-workshop')
+        runtime.services.hanaworldsWorkshop = { call: async () => ({ ok: true }) }
+      return { ok: true }
+    } }
+    await expect(hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)).rejects.toThrow('SESSION_OR_GRANT_CHANGED')
   })
 })

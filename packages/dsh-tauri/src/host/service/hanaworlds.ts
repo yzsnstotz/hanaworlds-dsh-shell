@@ -21,6 +21,7 @@ interface GrantEvidence {
 }
 
 interface Binding extends Grant {
+  session: Session
   sessionRef: string
   actorRef: string
   authorizationRef: string
@@ -49,6 +50,8 @@ const allowedOperations = new Set([
   'AppendMultimodalTurn',
   'AnswerClarification',
   'ReadSessionTurnDetails',
+  'ReadCurrentUndoStatus',
+  'UndoCurrentBuild',
   'ListObjects',
   'SelectObjects',
   'BeginFirstBuilding',
@@ -61,7 +64,7 @@ const allowedOperations = new Set([
   'PersistRequiredArtifactResources',
   'ReopenExistingArtifact',
 ])
-const worldRefOperations = new Set(['SwitchWorldContext', 'ListObjects', 'CreateBuildPlan'])
+const worldRefOperations = new Set(['SwitchWorldContext', 'ListObjects', 'CreateBuildPlan', 'ReadCurrentUndoStatus', 'UndoCurrentBuild'])
 
 export const hanaworlds = defineService({
   async context(sessionRef?: string) {
@@ -88,7 +91,8 @@ export const hanaworlds = defineService({
   },
 
   async bind(sessionRef: string, worldRef: string, engineActorName: string) {
-    if (!liveSession(sessionRef) || !worldRef || !engineActorName)
+    const session = liveSession(sessionRef)
+    if (!session || !worldRef || !engineActorName)
       throw new Error('SESSION_OR_CANDIDATE_INVALID')
     const evidence = grantEvidence()
     if (!evidence)
@@ -107,9 +111,9 @@ export const hanaworlds = defineService({
       || proof.worldRef !== worldRef || proof.engineActorName !== engineActorName) {
       throw new Error('NATIVE_GRANT_NOT_CURRENT')
     }
-    if (!liveSession(sessionRef))
+    if (liveSession(sessionRef) !== session)
       throw new Error('SESSION_NOT_CURRENT')
-    bindings.set(sessionRef, { ...candidate, actorRef: `luanti:${engineActorName}`, sessionRef, authorizationRef: randomUUID() })
+    bindings.set(sessionRef, { ...candidate, session, actorRef: `luanti:${engineActorName}`, sessionRef, authorizationRef: randomUUID() })
     return { status: 'bound', sessionRef, worldRef, engineActorName }
   },
 
@@ -117,6 +121,16 @@ export const hanaworlds = defineService({
     if (!allowedOperations.has(operation) || !payload || Array.isArray(payload)
       || typeof payload !== 'object') {
       throw new Error('WORKSHOP_OPERATION_INVALID')
+    }
+    if (operation === 'ReadCurrentUndoStatus' || operation === 'UndoCurrentBuild') {
+      const fields = operation === 'UndoCurrentBuild'
+        ? ['contractVersion', 'requestId', 'expectedTurnRevision', 'expectedHistoryRevision']
+        : ['contractVersion', 'requestId']
+      if (payload.contractVersion !== 'session/v2'
+        || Object.keys(payload).some(key => !fields.includes(key))
+        || fields.some(key => typeof payload[key] !== 'string' || !payload[key])) {
+        throw new Error('WORKSHOP_OPERATION_INVALID')
+      }
     }
     const binding = await currentBinding(sessionRef)
     if (!binding)
@@ -136,18 +150,29 @@ export const hanaworlds = defineService({
         return workshopCall(operation, body)
       })
     }
-    return workshopCall(operation, body)
+    const result = await workshopCall(operation, body)
+    if ((operation === 'ReadCurrentUndoStatus' || operation === 'UndoCurrentBuild')
+      && (await currentBinding(sessionRef) !== binding
+        || serviceOf(host, 'hanaworldsWorkshop') !== workshop)) {
+      throw new Error('SESSION_OR_GRANT_CHANGED')
+    }
+    return result
   },
 
-  async verify(request: Record<string, unknown>) {
+  async verify(request: Record<string, unknown>, operation?: string) {
     const binding = await bindingFor(request)
-    if (!binding)
+    if (!binding || (request.actorRef !== undefined && request.actorRef !== binding.actorRef))
       return { current: false }
-    return { current: true, actorRef: binding.actorRef, sessionRef: binding.sessionRef, worldRef: binding.worldRef, authorizationRef: binding.authorizationRef, engineActorName: binding.engineActorName, nativeGrantRef: binding.grantRef, authorRef: binding.actorRef, surface: 'SHELL', allowedActions: ['READ', 'APPEND', 'INSPECT', 'SELECT', 'ANALYZE', 'APPLY_RECOVERABLE'] }
+    const allowedActions = operation === 'ReadCurrentUndoStatus'
+      ? ['HISTORY']
+      : operation === 'UndoCurrentBuild'
+        ? ['UNDO']
+        : ['READ', 'APPEND', 'INSPECT', 'SELECT', 'ANALYZE', 'APPLY_RECOVERABLE', 'HISTORY', 'UNDO']
+    return { current: true, actorRef: binding.actorRef, sessionRef: binding.sessionRef, worldRef: binding.worldRef, authorizationRef: binding.authorizationRef, engineActorName: binding.engineActorName, nativeGrantRef: binding.grantRef, authorRef: binding.actorRef, surface: 'SHELL', allowedActions }
   },
 
   async verifyEngineBinding(request: Record<string, unknown>) {
-    return hanaworlds.verify(request)
+    return hanaworlds.verify({ ...request, actorRef: (request.authorizationBinding as { actorRef?: unknown } | undefined)?.actorRef })
   },
 
   async verifyService() {
@@ -174,11 +199,11 @@ function grantEvidence(): GrantEvidence | null {
     : null
 }
 
-function liveSession(sessionRef: string): boolean {
+function liveSession(sessionRef: string): Session | undefined {
   if (typeof sessionRef !== 'string' || !sessionRef)
-    return false
+    return undefined
   const host = getCurrentHostInstance() as unknown as HostContext
-  return host.sessions.get(sessionRef as SessionId) !== undefined
+  return host.sessions.get(sessionRef as SessionId)
 }
 
 function validGrant(value: unknown): value is Grant {
@@ -193,13 +218,15 @@ async function currentBinding(sessionRef: string): Promise<Binding | null> {
   const binding = bindings.get(sessionRef)
   if (!binding)
     return null
-  if (!liveSession(sessionRef)) {
-    bindings.delete(sessionRef)
+  if (liveSession(sessionRef) !== binding.session) {
+    if (bindings.get(sessionRef) === binding)
+      bindings.delete(sessionRef)
     return null
   }
   const evidence = grantEvidence()
   if (!evidence) {
-    bindings.delete(sessionRef)
+    if (bindings.get(sessionRef) === binding)
+      bindings.delete(sessionRef)
     return null
   }
   let proof: Grant | { current: false }
@@ -211,12 +238,16 @@ async function currentBinding(sessionRef: string): Promise<Binding | null> {
     })
   }
   catch {
-    bindings.delete(sessionRef)
+    if (bindings.get(sessionRef) === binding)
+      bindings.delete(sessionRef)
     return null
   }
-  if (!validGrant(proof) || proof.grantRef !== binding.grantRef
+  if (bindings.get(sessionRef) !== binding || liveSession(sessionRef) !== binding.session
+    || grantEvidence() !== evidence
+    || !validGrant(proof) || proof.grantRef !== binding.grantRef
     || proof.worldRef !== binding.worldRef || proof.engineActorName !== binding.engineActorName) {
-    bindings.delete(sessionRef)
+    if (bindings.get(sessionRef) === binding)
+      bindings.delete(sessionRef)
     return null
   }
   return binding

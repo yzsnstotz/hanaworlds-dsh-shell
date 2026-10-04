@@ -117,3 +117,46 @@ describe('hanaWorlds desktop host route', () => {
     }
   })
 })
+
+describe('hanaWorlds undo route', () => {
+  it.each(['ReadCurrentUndoStatus', 'UndoCurrentBuild'])('requires trusted transport for %s and preserves Workshop denial', async (operation) => {
+    process.env.DSH_TAURI_EMBEDDED = '1'
+    process.env.HANAWORLDS_DESKTOP_TOKEN = token
+    const denial = { contractVersion: 'session/v2', requestId: 'undo-1', result: null, error: { code: 'AUTHORIZATION_REVOKED', reason: 'GRANT_REVOKED' } }
+    const call = vi.spyOn(hanaworlds, 'call').mockResolvedValue(denial)
+    const runtime = await host()
+    try {
+      const input = { sessionRef: 'session-a', operation, payload: { contractVersion: 'session/v2', requestId: 'undo-1' } }
+      const send = (headers: Record<string, string>) => fetch(`${runtime.base}/api/desktop/hanaworlds/workshop`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(input),
+      })
+      expect((await send({})).status).toBe(403)
+      expect((await send({ 'x-hanaworlds-desktop-token': token, 'origin': 'http://evil.invalid' })).status).toBe(403)
+      expect(call).not.toHaveBeenCalled()
+      const reply = await send({ 'x-hanaworlds-desktop-token': token })
+      expect(reply.status).toBe(200)
+      expect(await reply.json()).toEqual(denial)
+      expect(call).toHaveBeenCalledExactlyOnceWith('session-a', operation, input.payload)
+    }
+    finally { await runtime.close() }
+  })
+
+  it('reports missing Workshop distinctly without presenting success', async () => {
+    process.env.DSH_TAURI_EMBEDDED = '1'
+    process.env.HANAWORLDS_DESKTOP_TOKEN = token
+    vi.spyOn(hanaworlds, 'call').mockRejectedValue(new Error('WORKSHOP_UNAVAILABLE'))
+    const runtime = await host()
+    try {
+      const reply = await fetch(`${runtime.base}/api/desktop/hanaworlds/workshop`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-hanaworlds-desktop-token': token },
+        body: JSON.stringify({ sessionRef: 'session-a', operation: 'UndoCurrentBuild', payload: {} }),
+      })
+      expect(reply.status).toBe(503)
+      expect(await reply.json()).toEqual({ error: 'WORKSHOP_UNAVAILABLE' })
+    }
+    finally { await runtime.close() }
+  })
+})
