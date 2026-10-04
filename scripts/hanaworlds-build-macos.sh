@@ -16,7 +16,6 @@ case "$dsh_tag" in "dsh-$recommended-"[0-9]*) ;; *) echo "Tag must match recomme
 platform=macos
 case "$(uname -m)" in arm64) arch=arm64 ;; x86_64) arch=x64 ;; *) echo 'Unsupported Mac architecture' >&2; exit 1 ;; esac
 command -v node >/dev/null || { echo 'Build machine needs Node.js' >&2; exit 1; }
-command -v pnpm >/dev/null || { echo 'Build machine needs pnpm' >&2; exit 1; }
 command -v cargo >/dev/null || { echo 'Build machine needs Rust/Cargo' >&2; exit 1; }
 
 work="$(mktemp -d "$repo/.hanaworlds-build.XXXXXX")"
@@ -59,12 +58,16 @@ for entry in node/bin/node dsh/node_modules/@deepseek-ai/dsh/lib/bin.js pnpm/bin
   [ -f "src-tauri/resources/$entry" ] || { echo "Bundled entry missing: $entry" >&2; exit 1; }
 done
 
+node_bin="$repo/src-tauri/resources/node/bin/node"
+pnpm_bin="$repo/src-tauri/resources/pnpm/bin/pnpm.cjs"
+export PATH="$repo/src-tauri/resources/node/bin:$PATH"
+
 source_sha="$(git rev-parse HEAD)"
 build_id="$(printf '%s\n%s\n%s\n' "$source_sha" "$dsh_tag" "$(sha256 src-tauri/resources/manifest.jsonc)" | shasum -a 256 | awk '{print $1}')"
 printf '%s\n' "$build_id" > src-tauri/resources/hanaworlds/build-id.txt
 export HANAWORLDS_BUILD_ID="$build_id"
-pnpm install --frozen-lockfile
-pnpm tauri build --config src-tauri/tauri.hanaworlds.conf.json --features hanaworlds-product --bundles app
+"$node_bin" "$pnpm_bin" install --frozen-lockfile
+"$node_bin" "$pnpm_bin" tauri build --config src-tauri/tauri.hanaworlds.conf.json --features hanaworlds-product --bundles app
 
 candidate="src-tauri/target/release/bundle/macos/HanaWorlds.app"
 [ -d "$candidate" ] || { echo "Built HanaWorlds.app missing: $candidate" >&2; exit 1; }
