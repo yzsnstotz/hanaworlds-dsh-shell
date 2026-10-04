@@ -1,0 +1,9 @@
+{
+  "productName": "HanaWorlds",
+  "identifier": "HanaWorlds",
+  "bundle": {
+    "copyright": "Copyright © 2026 HanaWorlds contributors",
+    "shortDescription": "HanaWorlds Shell",
+    "longDescription": "HanaWorlds Shell with its own bundled host and runtime."
+  }
+}

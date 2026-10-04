@@ -37,6 +37,9 @@ fn legacy_dsh_home(app_handle: &AppHandle) -> PathBuf {
 /// 幂等：成功后会删除旧目录并置位 `.store.dat` 标记，重复调用为 no-op。
 /// 失败返回 Err（不删除旧数据），由调用方决定是否阻断——本应用选择仅告警。
 pub fn migrate(app_handle: &AppHandle) -> Result<(), String> {
+    if cfg!(feature = "hanaworlds-product") {
+        return Ok(());
+    }
     // 开发（debug）构建不执行旧数据迁移：旧版 AppData `data/dsh` 是生产的
     // 数据（release 尚未完成迁移时会把它整目录搬进开发版的 `.dsh.dev`，
     // 导致 release 丢失数据）。开发构建的数据目录从一开始就是独立的 `.dsh.dev`。
@@ -97,6 +100,9 @@ fn legacy_app_data_dir(target: &Path) -> Option<PathBuf> {
 /// 判定首装，晚于搬移会把升级用户误判成全新安装（弹引导页 + 回落默认档案）。
 /// 失败只告警不阻断，旧数据原地保留，下次启动重试。
 pub fn migrate_app_data_dir(app_handle: &AppHandle) -> Result<(), String> {
+    if cfg!(feature = "hanaworlds-product") {
+        return Ok(());
+    }
     // debug 构建与 E2E 运行都不搬移：app-data 根目录同时承载生产的 `.store.dat`
     //（E2E 的 `.store.test.dat` 也在同一目录），开发/测试运行不得搬动它——与
     // `migrate()` 同理。E2E 还可能在 release 二进制上跑（门控只看

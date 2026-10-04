@@ -1083,6 +1083,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "tray-icon 0.25.0",
+ "uuid",
  "webview2-com",
  "windows-core 0.61.2",
  "windows-sys 0.61.2",

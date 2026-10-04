@@ -354,6 +354,7 @@ pub async fn launch_harness(app_handle: AppHandle) -> Result<(), String> {
 /// 停止 Harness 服务
 #[tauri::command]
 pub async fn shutdown_harness(app_handle: AppHandle) -> Result<(), String> {
+    crate::bridge::hanaworlds::clear_token();
     workflow::stop(app_handle).await
 }
 

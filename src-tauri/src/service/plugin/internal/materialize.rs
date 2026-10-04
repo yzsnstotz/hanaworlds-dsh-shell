@@ -247,6 +247,43 @@ mod tests {
     }
 
     #[test]
+    fn materialize_links_preserves_hanaworlds_profile_registrations() {
+        let (root, profile, links) = fixture("hanaworlds-preserve", &["dsh-tauri"]);
+        let original = serde_json::json!({
+            "name": "dsh-profile-hanaworlds",
+            "private": true,
+            "dependencies": {
+                "hanaworlds-workshop": "link:/existing/workshop",
+                "hanaworlds-canvas": "link:/existing/canvas"
+            },
+            "dsh": {"profile": {"bundles": [
+                "@deepseek-ai/dsh-base", "hanaworlds-workshop", "hanaworlds-canvas"
+            ]}}
+        });
+        std::fs::write(
+            profile.join("package.json"),
+            format!("{}\n", serde_json::to_string_pretty(&original).unwrap()),
+        )
+        .unwrap();
+
+        materialize_links(&profile, &links).unwrap();
+
+        let after = manifest(&profile);
+        for name in ["hanaworlds-workshop", "hanaworlds-canvas"] {
+            assert_eq!(after["dependencies"][name], original["dependencies"][name]);
+        }
+        assert_eq!(
+            &after["dsh"]["profile"]["bundles"].as_array().unwrap()[..3],
+            original["dsh"]["profile"]["bundles"]
+                .as_array()
+                .unwrap()
+                .as_slice()
+        );
+        assert_eq!(after["dsh"]["profile"]["bundles"][3], "dsh-tauri");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn materialize_links_replaces_broken_entry_and_is_idempotent() {
         let (root, profile, links) = fixture("replace", &["dsh-tauri"]);
         let entry = links[0].entry.clone();
