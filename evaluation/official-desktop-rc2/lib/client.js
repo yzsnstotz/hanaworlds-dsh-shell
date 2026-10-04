@@ -22,7 +22,9 @@ window.__ModuleLoader__.load({
             })
           const body = await response.json()
           setResult(response.ok
-            ? `Session ${body.sessionId ?? sessionId}: ${body.count ?? '—'} action(s), ${body.grant}`
+            ? action === 'revoke'
+              ? `Session ${body.sessionId ?? sessionId}: fixture grant revoked`
+              : `Workshop ${body.sessionId ?? sessionId}: revision ${body.sessionRevision}, ${body.turns} turn(s), ${body.grant}`
             : `HTTP ${response.status}: ${body.error ?? 'unknown error'}`)
         } catch (error) {
           setResult(error instanceof Error ? error.message : String(error))
@@ -38,10 +40,10 @@ window.__ModuleLoader__.load({
         style: { marginRight: 6, padding: '3px 7px', border: '1px solid currentColor', borderRadius: 4 },
       }, label)
       return h('div', { 'data-hanaworlds-evaluation': true, style: { padding: '5px 8px', fontSize: 12 } },
-        h('strong', null, 'HanaWorlds evaluation · FIXTURE grant'),
+        h('strong', null, 'HanaWorlds Workshop · FIXTURE grant'),
         h('div', { style: { marginTop: 4 } },
-          button('Record action', 'record'),
-          button('Read after reload', 'read'),
+          button('Start Workshop', 'start'),
+          button('Read Workshop', 'read'),
           button('Revoke fixture grant', 'revoke')),
         h('div', { role: 'status', style: { marginTop: 4 } }, result))
     }

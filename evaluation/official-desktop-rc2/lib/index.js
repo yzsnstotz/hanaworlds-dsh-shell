@@ -1,9 +1,36 @@
 import { randomUUID } from 'node:crypto'
 
-export const inject = ['connection', 'webServer', 'sessions', 'sessionPersistence']
+export const inject = ['connection', 'webServer', 'sessions']
+
+const fixtureCapabilities = {
+  providerRef: 'fixture', capabilityRevision: '1', worldRef: null,
+  engineBounds: null, limits: [], recoveryGuarantee: null,
+  stateProfile: null, regionProtectionWriters: [], sessionDeleteSupported: false,
+  imageMediaTypes: ['image/png'], model: 'fixture',
+}
 
 export function apply(ctx) {
   let grantActive = true
+  const soleSession = id => {
+    const live = ctx.sessions.list()
+    return live.length === 1 && live[0].id === id && ctx.sessions.get(id) === live[0]
+      ? live[0] : undefined
+  }
+  ctx.provide('hanaworldsAuthority', {
+    verify: async (body, operation) => {
+      if (!grantActive || !soleSession(body.sessionRef)) return { current: false }
+      return {
+        current: true,
+        actorRef: body.actorRef,
+        sessionRef: body.sessionRef,
+        authorizationRef: body.authorizationRef,
+        surface: 'SHELL',
+        allowedActions: ['READ'],
+        operation,
+      }
+    },
+  })
+  ctx.provide('hanaworldsCapabilities', fixtureCapabilities)
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/api/desktop/hanaworlds-eval',
@@ -14,8 +41,8 @@ export function apply(ctx) {
         res.setHeader('cache-control', 'no-store')
         res.end(JSON.stringify(payload))
       }
-      const rejection = ctx.connection.requestRejection(req)
-      if (rejection !== undefined) { send(rejection, { error: 'CONNECTION_REJECTED' }); return }
+      const admission = ctx.connection.admit(req)
+      if ('rejection' in admission) { send(admission.rejection, { error: 'CONNECTION_REJECTED' }); return }
       if (req.method !== 'GET' && req.method !== 'POST') { send(405, { error: 'METHOD_NOT_ALLOWED' }); return }
       if (req.method === 'POST') {
         const origin = req.headers.origin
@@ -43,40 +70,45 @@ export function apply(ctx) {
         send(400, { error: 'INVALID_INPUT' })
         return
       }
-      const session = ctx.sessions.get(input.sessionId)
-      if (!session) { send(409, { error: 'SESSION_NOT_CURRENT' }); return }
+      const session = soleSession(input.sessionId)
+      if (!session) { send(409, { error: 'SESSION_VIEW_UNBOUND' }); return }
       if (req.method === 'POST' && input.action === 'revoke') {
         grantActive = false
-        send(200, { grant: 'fixture-revoked' })
+        send(200, { grant: 'fixture-revoked', sessionId: session.id })
         return
       }
-      if (req.method === 'POST' && input.action !== 'record') {
+      if (req.method === 'POST' && input.action !== 'start') {
         send(400, { error: 'ACTION_INVALID' })
         return
       }
-      if (req.method === 'POST' && !grantActive) {
-        send(403, { error: 'FIXTURE_GRANT_REVOKED' })
-        return
-      }
+      const workshop = ctx.get('hanaworldsWorkshop')
+      if (typeof workshop?.call !== 'function') { send(503, { error: 'WORKSHOP_UNAVAILABLE' }); return }
+      const operation = req.method === 'POST' ? 'StartOrResumeSession' : 'ReadSessionTurnDetails'
       try {
-        if (req.method === 'POST') {
-          const id = `hw-eval-${randomUUID()}`
-          session.append('user/message', {
-            id, role: 'user', source: { kind: 'user' },
-            content: [{ type: 'text', text: 'HanaWorlds evaluation action' }],
-          }, { surfaceOp: 'append' })
-          if (await ctx.sessions.flush(session) !== true) throw new Error('SESSION_FLUSH_FAILED')
+        const response = await workshop.call(operation, {
+          contractVersion: 'session/v2',
+          actorRef: 'fixture:operator',
+          sessionRef: session.id,
+          requestId: `hw-eval-${randomUUID()}`,
+          authorizationRef: 'fixture:grant',
+          ...(operation === 'StartOrResumeSession' ? { expectedRevision: null } : {}),
+        })
+        if (response?.error) {
+          const code = response.error.code ?? 'WORKSHOP_FAILED'
+          send(code === 'AUTHORIZATION_REVOKED' ? 403 : code === 'SESSION_NOT_FOUND' ? 404 : 503, { error: code })
+          return
         }
-        const handle = await ctx.sessionPersistence.open(session.id, 'read')
-        let events
-        try { ({ events } = await handle.read()) } finally { await handle.close() }
-        if (!Array.isArray(events)) throw new Error('SESSION_READ_INVALID')
-        const markers = events.filter(event => event.type === 'user/message'
-          && typeof event.data?.id === 'string' && event.data.id.startsWith('hw-eval-')
-          && event.data.content?.[0]?.text === 'HanaWorlds evaluation action')
-        send(200, { sessionId: session.id, count: markers.length, grant: grantActive ? 'fixture-current' : 'fixture-revoked' })
-      } catch (error) {
-        send(503, { error: error instanceof Error ? error.message : 'SESSION_UNAVAILABLE' })
+        const result = response?.result
+        const sessionId = operation === 'StartOrResumeSession' ? result?.context?.currentSession : result?.sessionRef
+        const sessionRevision = operation === 'StartOrResumeSession' ? result?.context?.sessionRevision : result?.sessionRevision
+        if (sessionId !== session.id || typeof sessionRevision !== 'string' || !sessionRevision
+          || !Array.isArray(result?.turns)) {
+          send(503, { error: 'WORKSHOP_RESULT_INVALID' })
+          return
+        }
+        send(200, { operation, sessionId, sessionRevision, turns: result.turns.length, grant: 'fixture-current' })
+      } catch {
+        send(503, { error: 'WORKSHOP_UNAVAILABLE' })
       }
     },
   }), 'hanaworlds-official-eval: route')
