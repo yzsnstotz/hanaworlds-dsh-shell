@@ -16,6 +16,62 @@ fn build_id(resource_root: &Path) -> Result<String, String> {
     Ok(id.to_string())
 }
 
+pub fn profile_status(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let profile = config::get_dsh_data_path(app).join("profiles/hanaworlds");
+    profile_status_from_path(&profile)
+}
+
+fn profile_status_from_path(profile: &Path) -> Result<serde_json::Value, String> {
+    let raw_manifest = fs::read(profile.join("package.json"))
+        .map_err(|error| format!("HANAWORLDS_PROFILE_STATUS_READ: {error}"))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&raw_manifest)
+        .map_err(|error| format!("HANAWORLDS_PROFILE_STATUS_PARSE: {error}"))?;
+    let release_id = manifest
+        .pointer("/hanaworlds/releaseId")
+        .and_then(serde_json::Value::as_str);
+    let preserved_legacy_bundles =
+        if let Some(marker) = manifest.pointer("/hanaworlds/clientMigration") {
+            let saved = fs::read(profile.join(".hanaworlds-client-migration/legacy-package.json"))
+                .map_err(|error| format!("HANAWORLDS_PROFILE_STATUS_SNAPSHOT_READ: {error}"))?;
+            let digest = format!("{:x}", Sha256::digest(&saved));
+            if marker
+                .get("originalManifestSha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(digest.as_str())
+            {
+                return Err("HANAWORLDS_PROFILE_STATUS_SNAPSHOT_MISMATCH".to_string());
+            }
+            let expected_count = marker
+                .get("savedBundleCount")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("HANAWORLDS_PROFILE_STATUS_COUNT_MISSING")?;
+            let original: serde_json::Value = serde_json::from_slice(&saved)
+                .map_err(|error| format!("HANAWORLDS_PROFILE_STATUS_SNAPSHOT_PARSE: {error}"))?;
+            let actual_count = original
+                .pointer("/dsh/profile/bundles")
+                .and_then(serde_json::Value::as_array)
+                .ok_or("HANAWORLDS_PROFILE_STATUS_SNAPSHOT_BUNDLES_MISSING")?
+                .iter()
+                .filter(|bundle| {
+                    bundle
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("@hanaworlds/"))
+                })
+                .count() as u64;
+            if expected_count != actual_count {
+                return Err("HANAWORLDS_PROFILE_STATUS_COUNT_MISMATCH".to_string());
+            }
+            actual_count
+        } else {
+            0
+        };
+    Ok(serde_json::json!({
+        "profile": "hanaworlds",
+        "releaseId": release_id,
+        "preservedLegacyBundles": preserved_legacy_bundles,
+    }))
+}
+
 fn copy_core(source: &Path, target: &Path) -> Result<(), String> {
     let parent = target
         .parent()
@@ -274,7 +330,7 @@ pub fn prepare(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_id, migrate_legacy_profile};
+    use super::{build_id, migrate_legacy_profile, profile_status_from_path};
     use std::fs;
 
     #[test]
@@ -325,6 +381,9 @@ mod tests {
             1
         );
         assert_eq!(fs::read(root.join("cordis.patch.yml")).unwrap(), b"[]\n");
+        let status = profile_status_from_path(&root).unwrap();
+        assert_eq!(status["releaseId"], "old");
+        assert_eq!(status["preservedLegacyBundles"], 1);
         fs::remove_dir_all(root).unwrap();
     }
 

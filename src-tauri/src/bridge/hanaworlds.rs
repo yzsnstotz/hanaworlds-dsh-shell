@@ -38,6 +38,9 @@ pub async fn hanaworlds_request(
     if window.label() != crate::desktop::builder::MAIN_WINDOW_LABEL || !trusted_page {
         return Err("HANAWORLDS_OPERATION_DENIED: untrusted window".to_string());
     }
+    if cfg!(feature = "hanaworlds-product") && operation == "profileStatus" {
+        return crate::service::hanaworlds_product::profile_status(&app_handle);
+    }
     let path = match operation.as_str() {
         "context" => "context",
         "bind" => "bindings",

@@ -15,9 +15,17 @@ interface Context {
   candidates?: Array<{ worldRef: string, engineActorName: string, scope: string }>
 }
 
+interface ProfileStatus {
+  profile: string
+  releaseId: string | null
+  preservedLegacyBundles: number
+}
+
 export function HanaWorldsBinding() {
   const { t } = useTranslation()
   const [context, setContext] = useState<Context | null>(null)
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null)
+  const [profileError, setProfileError] = useState(false)
   const [sessionRef, setSessionRef] = useState('')
   const [candidateIndex, setCandidateIndex] = useState(-1)
   const [busy, setBusy] = useState(false)
@@ -43,6 +51,26 @@ export function HanaWorldsBinding() {
     }
   }
 
+  async function loadProfileStatus() {
+    try {
+      setProfileStatus(await invoke<ProfileStatus>('hanaworlds_request', {
+        operation: 'profileStatus',
+        input: {},
+      }))
+      setProfileError(false)
+    }
+    catch {
+      setProfileStatus(null)
+      setProfileError(true)
+    }
+  }
+
+  function refresh() {
+    void load(sessionRef)
+    if (import.meta.env.VITE_HANAWORLDS_PRODUCT === '1')
+      void loadProfileStatus()
+  }
+
   async function bind() {
     const candidate = context?.candidates?.[candidateIndex]
     if (!sessionRef || !candidate)
@@ -64,20 +92,35 @@ export function HanaWorldsBinding() {
 
   useMount(() => {
     void load('')
+    if (import.meta.env.VITE_HANAWORLDS_PRODUCT === '1')
+      void loadProfileStatus()
   })
 
   return (
     <section className="mb-4 rounded-lg border border-line bg-panel2/40 p-4" data-testid="hanaworlds-binding-status">
       <div className="flex items-center justify-between gap-3">
         <p className="m-0 text-sm font-semibold text-ink">{t('hanaworlds.binding_title')}</p>
-        <Button size="sm" variant="ghost" isDisabled={busy} onPress={() => { void load(sessionRef) }}>
+        <Button size="sm" variant="ghost" isDisabled={busy} onPress={refresh}>
           {t('hanaworlds.refresh')}
         </Button>
       </div>
       <If cond={import.meta.env.VITE_HANAWORLDS_PRODUCT === '1'}>
-        <p className="m-0 mt-2 text-xs text-warning" data-testid="hanaworlds-legacy-migration-notice">
-          {t('hanaworlds.legacy_migration_notice')}
-        </p>
+        <div className="mt-2 text-xs" data-testid="hanaworlds-profile-status">
+          {profileStatus && (
+            <p className="m-0 break-all text-muted">
+              {t('hanaworlds.profile_release', {
+                profile: profileStatus.profile,
+                releaseId: profileStatus.releaseId ?? '—',
+              })}
+            </p>
+          )}
+          {profileStatus && profileStatus.preservedLegacyBundles > 0 && (
+            <p className="m-0 mt-1 text-warning">
+              {t('hanaworlds.legacy_migration_notice', { count: profileStatus.preservedLegacyBundles })}
+            </p>
+          )}
+          {profileError && <p className="m-0 text-warning">{t('hanaworlds.profile_status_unavailable')}</p>}
+        </div>
       </If>
       <p className="m-0 mt-1 text-xs text-muted">
         {context?.status === 'bound'
