@@ -166,6 +166,7 @@ pub(super) fn on_owned_process_exit(
     exit_code: impl FnOnce(&OwnedProcess) -> Option<i64>,
 ) -> Option<OwnedProcess> {
     let owned = take_owned_process_if(pid)?;
+    crate::bridge::hanaworlds::clear_token();
     // 必须在成功取走当前 PID 后才读取 Windows 句柄：正常停止会先取走并关闭
     // 句柄，旧监视线程不得再查询该句柄，更不得发送“意外退出”事件。
     let exit_code = exit_code(&owned);
@@ -558,6 +559,7 @@ pub(super) fn warn_if_inotify_watch_limit_low() {
 /// 停止 Harness 服务
 pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("Stopping Harness service...");
+    crate::bridge::hanaworlds::clear_token();
     // 重置启动守卫，确保后续 launch 可以重新拉起；仅结束持有的根进程树。
     // 进程终止涉及 WaitForSingleObject（至多 5s）与 taskkill/kill 等同步阻塞
     // 调用，移出 Tokio 执行线程避免卡住其他并发任务（WARN-7/P2-#20）。
