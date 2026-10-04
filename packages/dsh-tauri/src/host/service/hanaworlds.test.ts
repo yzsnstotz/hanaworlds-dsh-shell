@@ -10,8 +10,10 @@ afterEach(() => clearHostRuntime())
 function host() {
   let currentGrant = { ...firstGrant }
   let online = true
+  let worldRevision = 'world-rev-1'
   const calls: Array<{ operation: string, body: Record<string, unknown> }> = []
   const services: Record<string, unknown> = {
+    hanaworldsWorldRevisionOracle: { read: async () => worldRevision },
     hanaworldsLuantiGrantEvidence: {
       listCurrentLocalGrants: async () => online ? [currentGrant] : [],
       verifyCurrentLocalGrant: async ({ expectedGrantRef }: { expectedGrantRef: string }) =>
@@ -24,6 +26,19 @@ function host() {
       },
     },
   }
+  const canvas = {
+    subscribeCanvasEvents: async (request: Record<string, unknown>) => hanaworlds.verify({ ...request, contractVersion: 'canvas/v4' }, 'ListObjects'),
+    call: async (operation: string, raw: unknown) => {
+      const request = raw as Record<string, unknown>
+      return (
+        ['RestoreTransaction', 'AbortPreparedTransaction', 'AbortPreparedHistoryTransaction'].includes(operation)
+          ? hanaworlds.verifyService(request, operation)
+          : ['APPLY_RECOVERABLE', 'INSPECT', 'READBACK', 'HISTORY', 'UNDO', 'REDO'].includes(operation)
+              ? hanaworlds.verifyEngineBinding(request, operation)
+              : hanaworlds.verify(request, operation))
+    },
+  }
+  services.hanaworldsCanvasV4 = canvas
   const sessions = new Map([['session-a', { id: 'session-a' }]])
   setCurrentHostInstance({
     sessions: {
@@ -32,8 +47,10 @@ function host() {
     },
     get: (name: string) => services[name],
   } as never)
+  hanaworlds.attachCanvas(canvas)
   return {
     calls,
+    canvas,
     services,
     sessions,
     revoke: () => { online = false },
@@ -41,8 +58,123 @@ function host() {
       online = true
       currentGrant = { ...firstGrant, grantRef: 'grant-b' }
     },
+    revise: (revision: string) => { worldRevision = revision },
   }
 }
+
+describe('hanaWorlds Canvas authority', () => {
+  it('attests a running local world only through a current host process fact', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    const request = { action: 'BIND_RUNNING_WORLD', worldPath: '/isolated/world-a', worldRef: firstGrant.worldRef }
+    await expect(hanaworlds.verifyOperator(request)).resolves.toEqual({ current: false })
+    let connected = true
+    runtime.services.hanaworldsLocalWorldProcessEvidence = {
+      verifyRunningWorld: async () => connected ? { current: true, worldPath: request.worldPath, worldRef: request.worldRef, processRef: 'process-a', running: true } : { current: false },
+    }
+    await expect(hanaworlds.verifyOperator(request)).resolves.toMatchObject({ current: true, worldPath: request.worldPath, worldRef: request.worldRef, action: 'BIND_RUNNING_WORLD' })
+    connected = false
+    await expect(hanaworlds.verifyOperator(request)).resolves.toEqual({ current: false })
+    await expect(hanaworlds.verifyOperator({ ...request, action: 'PROVISION_PAYLOAD' })).resolves.toEqual({ current: false })
+  })
+
+  it('returns only the exact Canvas operation and current trusted world revision', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'StartOrResumeSession', {})
+    const body = runtime.calls[0]!.body
+    const canvasRequest = { ...body, contractVersion: 'canvas/v4' }
+    await expect(hanaworlds.verify(canvasRequest, 'ApplyRecoverableCommit')).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('ApplyRecoverableCommit', canvasRequest)).resolves.toMatchObject({
+      current: true,
+      allowedActions: ['ApplyRecoverableCommit'],
+      currentWorldRevision: 'world-rev-1',
+      actorRef: 'luanti:player-a',
+      sessionRef: 'session-a',
+      worldRef: firstGrant.worldRef,
+    })
+    await expect(runtime.canvas.call('AuthorizeBinding', { ...body, contractVersion: 'world-adapter/v4', actorRef: 'hanaworlds-canvas' })).resolves.toMatchObject({
+      current: true,
+      actorRef: 'hanaworlds-canvas',
+      allowedActions: ['AuthorizeBinding'],
+      domainOwner: 'hanaworlds-canvas',
+    })
+    runtime.revise('world-rev-2')
+    await expect(runtime.canvas.call('ApplyRecoverableCommit', { ...canvasRequest, expectedWorldRevision: 'world-rev-1' })).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('InspectObject', { ...canvasRequest, expectedRevision: 'world-rev-1' })).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('UnknownOperation', canvasRequest)).resolves.toEqual({ current: false })
+  })
+
+  it('preserves exact Workshop permissions for the existing Session actions', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'StartOrResumeSession', {})
+    const request = { ...runtime.calls[0]!.body, contractVersion: 'session/v2' }
+    await expect(hanaworlds.verify(request, 'StartOrResumeSession')).resolves.toMatchObject({ current: true, allowedActions: ['READ'] })
+    await expect(hanaworlds.verify(request, 'ApplyCurrentBuild')).resolves.toMatchObject({ current: true, allowedActions: ['APPLY_RECOVERABLE'] })
+    await expect(hanaworlds.verify(request, 'NoSuchSessionAction')).resolves.toEqual({ current: false })
+  })
+
+  it('keeps Canvas event subscriptions under the same trusted service scope', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'StartOrResumeSession', {})
+    await expect(runtime.canvas.subscribeCanvasEvents(runtime.calls[0]!.body)).resolves.toMatchObject({ current: true, allowedActions: ['ListObjects'] })
+  })
+
+  it('rejects browser shaped engine identity and only accepts a current bound principal', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'StartOrResumeSession', {})
+    const body = runtime.calls[0]!.body
+    await expect(hanaworlds.verifyEngineBinding({ ...body, contractVersion: 'world-adapter/v4', actorRef: 'hanaworlds-canvas' }, 'READBACK')).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('APPLY_RECOVERABLE', { ...body, actorRef: 'hanaworlds-canvas', authorizationBinding: { actorRef: 'luanti:player-a' } })).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('APPLY_RECOVERABLE', { ...body, actorRef: 'hanaworlds-canvas', authorizationBinding: { actorRef: 'luanti:player-a' }, contractVersion: 'world-adapter/v4' })).resolves.toMatchObject({ current: true, actorRef: 'luanti:player-a', allowedActions: ['APPLY_RECOVERABLE'] })
+    await expect(runtime.canvas.call('READBACK', { ...body, actorRef: 'hanaworlds-canvas', contractVersion: 'world-adapter/v4' })).resolves.toMatchObject({ current: true, actorRef: 'luanti:player-a', allowedActions: ['READBACK'] })
+    runtime.revoke()
+    await expect(runtime.canvas.call('APPLY_RECOVERABLE', { ...body, actorRef: 'hanaworlds-canvas', authorizationBinding: { actorRef: 'luanti:player-a' }, contractVersion: 'world-adapter/v4' })).resolves.toEqual({ current: false })
+  })
+
+  it('grants exact service recovery operations only during the current Canvas call', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'StartOrResumeSession', {})
+    const body = runtime.calls[0]!.body
+    const request = { ...body, actorRef: 'hanaworlds-canvas', transactionId: 'tx-1', contractVersion: 'world-adapter/v4' }
+    await expect(hanaworlds.verifyService(request, 'RestoreTransaction')).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('RestoreTransaction', request)).resolves.toMatchObject({ current: true, domainOwner: 'hanaworlds-canvas', worldRef: firstGrant.worldRef })
+    await expect(runtime.canvas.call('AbortPreparedTransaction', request)).resolves.toMatchObject({ current: true, allowedActions: ['AbortPreparedTransaction'] })
+    await expect(runtime.canvas.call('RestoreTransaction', { ...request, transactionId: '' })).resolves.toEqual({ current: false })
+    await expect(hanaworlds.verifyService(request, 'InspectRegion')).resolves.toEqual({ current: false })
+    runtime.revoke()
+    await expect(runtime.canvas.call('RestoreTransaction', request)).resolves.toEqual({ current: false })
+  })
+
+  it('rejects a Canvas provider withdrawn during world revision lookup', async () => {
+    const runtime = host()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    await hanaworlds.call('session-a', 'StartOrResumeSession', {})
+    let release!: (revision: string) => void
+    let reading!: () => void
+    const started = new Promise<void>((resolve) => {
+      reading = resolve
+    })
+    runtime.services.hanaworldsWorldRevisionOracle = {
+      read: () => {
+        reading()
+        return new Promise<string>((resolve) => {
+          release = resolve
+        })
+      },
+    }
+    const request = { ...runtime.calls[0]!.body, contractVersion: 'canvas/v4' }
+    const pending = runtime.canvas.call('ApplyRecoverableCommit', request)
+    await started
+    delete runtime.services.hanaworldsCanvasV4
+    release('world-rev-1')
+    await expect(pending).resolves.toEqual({ current: false })
+  })
+})
 
 function confirmationHost() {
   const trace: string[] = []
@@ -389,12 +521,12 @@ describe('hanaWorlds trusted undo bridge', () => {
     await expect(hanaworlds.call('session-a', operation, payload)).resolves.toEqual({ ok: true })
     const body = runtime.calls[0]!.body
     expect(body).toEqual({ ...payload, actorRef: 'luanti:player-a', sessionRef: 'session-a', worldRef: firstGrant.worldRef, authorizationRef: expect.any(String) })
-    const proof = await hanaworlds.verify(body)
-    expect(proof).toMatchObject({ current: true, worldRef: firstGrant.worldRef, allowedActions: expect.arrayContaining(['HISTORY', 'UNDO']) })
+    const proof = await hanaworlds.verify(body, operation)
+    expect(proof).toMatchObject({ current: true, worldRef: firstGrant.worldRef, allowedActions: [operation === 'UndoCurrentBuild' ? 'UNDO' : 'HISTORY'] })
     runtime.revoke()
-    await expect(hanaworlds.verify(body)).resolves.toEqual({ current: false })
+    await expect(hanaworlds.verify(body, operation)).resolves.toEqual({ current: false })
     runtime.regrant()
-    await expect(hanaworlds.verify(body)).resolves.toEqual({ current: false })
+    await expect(hanaworlds.verify(body, operation)).resolves.toEqual({ current: false })
   })
 
   it.each([['ReadCurrentUndoStatus', 'HISTORY'], ['UndoCurrentBuild', 'UNDO']])('does not classify %s as READ', async (operation, action) => {
@@ -437,9 +569,9 @@ describe('hanaWorlds trusted undo bridge', () => {
     const runtime = host()
     await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
     await hanaworlds.call('session-a', 'UndoCurrentBuild', undoBuild)
-    const body = { ...runtime.calls[0]!.body, actorRef: 'canvas-service', authorizationBinding: { actorRef: 'luanti:player-a' } }
-    await expect(hanaworlds.verifyEngineBinding(body)).resolves.toMatchObject({ current: true, actorRef: 'luanti:player-a', allowedActions: expect.arrayContaining(['UNDO']) })
-    await expect(hanaworlds.verifyEngineBinding({ ...body, authorizationBinding: { actorRef: 'forged' } })).resolves.toEqual({ current: false })
+    const body = { ...runtime.calls[0]!.body, contractVersion: 'world-adapter/v4', actorRef: 'hanaworlds-canvas', authorizationBinding: { actorRef: 'luanti:player-a' } }
+    await expect(runtime.canvas.call('UNDO', body)).resolves.toMatchObject({ current: true, actorRef: 'luanti:player-a', allowedActions: ['UNDO'] })
+    await expect(runtime.canvas.call('UNDO', { ...body, authorizationBinding: { actorRef: 'forged' } })).resolves.toEqual({ current: false })
   })
 
   it.each(['actorRef', 'sessionRef', 'worldRef', 'authorizationRef', 'authorizationBinding', 'nativeGrantRef', 'objectRef', 'transactionId', 'headTransactionId', 'turnRef', 'allowedActions'])('rejects caller supplied %s before forwarding undo', async (key) => {
@@ -501,9 +633,9 @@ describe('hanaWorlds trusted undo bridge', () => {
     await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
     await hanaworlds.call('session-a', 'ReadCurrentUndoStatus', undoStatus)
     const body = runtime.calls[0]!.body
-    await expect(hanaworlds.verify({ ...body, actorRef: 'forged' })).resolves.toEqual({ current: false })
+    await expect(hanaworlds.verify({ ...body, actorRef: 'forged' }, 'ReadCurrentUndoStatus')).resolves.toEqual({ current: false })
     await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
-    await expect(hanaworlds.verify(body)).resolves.toEqual({ current: false })
+    await expect(hanaworlds.verify(body, 'ReadCurrentUndoStatus')).resolves.toEqual({ current: false })
   })
 
   it('preserves typed Workshop denial and rejects unavailable or throwing Workshop', async () => {

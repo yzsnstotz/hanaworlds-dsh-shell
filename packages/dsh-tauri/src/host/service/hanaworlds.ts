@@ -1,5 +1,7 @@
 import type { HostContext, Session, SessionId, UserMessage } from '../types'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
+import { isAbsolute } from 'node:path'
 import { getCurrentHostInstance } from '../config/runtime'
 import { defineService } from './index'
 
@@ -44,6 +46,31 @@ interface SessionPersistenceReader {
 const bindings = new Map<string, Binding>()
 const confirmationLocks = new Map<string, Promise<void>>()
 const confirmedTurns = new Map<string, Map<string, { requestId: string, answer: string }>>()
+const canvasCalls = new AsyncLocalStorage<object>()
+const canvasOperations = new Set(['ListWorldConnections', 'SelectWorldConnection', 'SwitchWorldConnection', 'ListObjects', 'CreateObject', 'NameObject', 'RenameObject', 'SetObjectSelection', 'InspectObject', 'AnalyzeAffectedObjects', 'DecideAffectedObjectNotification', 'ApplyRecoverableCommit', 'Readback', 'Undo', 'Redo', 'HistoryQuery', 'InspectPlacementRegion'])
+const adapterOperations = new Set(['DiscoverConnections', 'ListWorlds', 'AuthorizeBinding', 'InspectWorld', 'PrepareRecoverableTransaction', 'ApplyCompiledTransaction', 'Readback', 'QueryTransaction', 'QueryPreparedTransaction', 'PrepareHistoryTransaction', 'QueryPreparedHistoryTransaction', 'ApplyHistoryTransaction', 'InspectRegion'])
+const engineActions = new Set(['APPLY_RECOVERABLE', 'INSPECT', 'READBACK', 'HISTORY', 'UNDO', 'REDO'])
+const serviceOperations = new Set(['RestoreTransaction', 'AbortPreparedTransaction', 'AbortPreparedHistoryTransaction'])
+const workshopActions = new Map<string, string>([
+  ['StartOrResumeSession', 'READ'],
+  ['SwitchWorldContext', 'SELECT'],
+  ['AppendMultimodalTurn', 'APPEND'],
+  ['AnswerClarification', 'APPEND'],
+  ['ReadSessionTurnDetails', 'READ'],
+  ['ReadCurrentUndoStatus', 'HISTORY'],
+  ['UndoCurrentBuild', 'UNDO'],
+  ['ListObjects', 'READ'],
+  ['SelectObjects', 'SELECT'],
+  ['BeginFirstBuilding', 'INSPECT'],
+  ['CreateBuildPlan', 'INSPECT'],
+  ['CompileCurrentBuild', 'INSPECT'],
+  ['AnalyzeCurrentBuild', 'ANALYZE'],
+  ['ApplyCurrentBuild', 'APPLY_RECOVERABLE'],
+  ['InvokeAction', 'INSPECT'],
+  ['RecordActionReceipt', 'APPEND'],
+  ['PersistRequiredArtifactResources', 'APPEND'],
+  ['ReopenExistingArtifact', 'READ'],
+])
 const allowedOperations = new Set([
   'StartOrResumeSession',
   'SwitchWorldContext',
@@ -160,23 +187,105 @@ export const hanaworlds = defineService({
   },
 
   async verify(request: Record<string, unknown>, operation?: string) {
-    const binding = await bindingFor(request)
-    if (!binding || (request.actorRef !== undefined && request.actorRef !== binding.actorRef))
+    const contract = request?.contractVersion
+    const canvas = contract === 'canvas/v4' && canvasOperations.has(operation ?? '')
+    const adapter = contract === 'world-adapter/v4' && adapterOperations.has(operation ?? '')
+    const workshop = contract === 'session/v2' && workshopActions.has(operation ?? '')
+    if (!canvas && !adapter && !workshop)
       return { current: false }
-    const allowedActions = operation === 'ReadCurrentUndoStatus'
-      ? ['HISTORY']
-      : operation === 'UndoCurrentBuild'
-        ? ['UNDO']
-        : ['READ', 'APPEND', 'INSPECT', 'SELECT', 'ANALYZE', 'APPLY_RECOVERABLE', 'HISTORY', 'UNDO']
-    return { current: true, actorRef: binding.actorRef, sessionRef: binding.sessionRef, worldRef: binding.worldRef, authorizationRef: binding.authorizationRef, engineActorName: binding.engineActorName, nativeGrantRef: binding.grantRef, authorRef: binding.actorRef, surface: 'SHELL', allowedActions }
+    const caller = canvas || adapter ? activeCanvas() : null
+    if ((canvas || adapter) && !caller)
+      return { current: false }
+    const binding = await bindingFor(request)
+    if (!binding || request.actorRef !== (adapter ? 'hanaworlds-canvas' : binding.actorRef))
+      return { current: false }
+    const revision = await currentWorldRevision(binding, request, operation)
+    if (!revision || (caller && activeCanvas() !== caller))
+      return { current: false }
+    const allowedActions = workshop ? [workshopActions.get(operation ?? '')] : [operation]
+    return { current: true, actorRef: request.actorRef, sessionRef: binding.sessionRef, worldRef: binding.worldRef, authorizationRef: binding.authorizationRef, engineActorName: binding.engineActorName, nativeGrantRef: binding.grantRef, authorRef: binding.actorRef, surface: 'SHELL', allowedActions, currentWorldRevision: revision, ...(adapter ? { domainOwner: 'hanaworlds-canvas' } : {}) }
   },
 
-  async verifyEngineBinding(request: Record<string, unknown>) {
-    return hanaworlds.verify({ ...request, actorRef: (request.authorizationBinding as { actorRef?: unknown } | undefined)?.actorRef })
+  async verifyEngineBinding(request: Record<string, unknown>, operation?: string) {
+    const caller = activeCanvas()
+    if (request?.contractVersion !== 'world-adapter/v4' || request.actorRef !== 'hanaworlds-canvas'
+      || !engineActions.has(operation ?? '') || !caller) {
+      return { current: false }
+    }
+    const binding = await bindingFor(request)
+    const statedActor = (request.authorizationBinding as { actorRef?: unknown } | undefined)?.actorRef
+    if (!binding || (statedActor !== undefined && statedActor !== binding.actorRef))
+      return { current: false }
+    const revision = await currentWorldRevision(binding, request)
+    if (!revision || activeCanvas() !== caller)
+      return { current: false }
+    return { current: true, actorRef: binding.actorRef, sessionRef: binding.sessionRef, worldRef: binding.worldRef, authorizationRef: binding.authorizationRef, engineActorName: binding.engineActorName, nativeGrantRef: binding.grantRef, authorRef: binding.actorRef, surface: 'SHELL', allowedActions: [operation], currentWorldRevision: revision, domainOwner: 'hanaworlds-canvas' }
   },
 
-  async verifyService() {
+  async verifyService(request: Record<string, unknown>, operation?: string) {
+    if (request?.contractVersion !== 'world-adapter/v4' || request.actorRef !== 'hanaworlds-canvas'
+      || !serviceOperations.has(operation ?? '') || typeof request.transactionId !== 'string' || !request.transactionId) {
+      return { current: false }
+    }
+    const canvas = activeCanvas()
+    const binding = await bindingFor(request)
+    if (!binding || !canvas) {
+      return { current: false }
+    }
+    const revision = await currentWorldRevision(binding, request)
+    if (!revision || activeCanvas() !== canvas)
+      return { current: false }
+    return { current: true, actorRef: 'hanaworlds-canvas', sessionRef: binding.sessionRef, worldRef: binding.worldRef, authorizationRef: binding.authorizationRef, domainOwner: 'hanaworlds-canvas', allowedActions: [operation], currentWorldRevision: revision }
+  },
+
+  async verifyOperator(request: Record<string, unknown>) {
+    if (request?.action !== 'BIND_RUNNING_WORLD' || typeof request.worldPath !== 'string'
+      || !isAbsolute(request.worldPath) || typeof request.worldRef !== 'string' || !request.worldRef) {
+      return { current: false }
+    }
+    const host = getCurrentHostInstance() as unknown as HostContext
+    const evidence = serviceOf(host, 'hanaworldsLocalWorldProcessEvidence') as { verifyRunningWorld?: (worldPath: string, worldRef: string) => Promise<unknown> } | undefined
+    if (typeof evidence?.verifyRunningWorld !== 'function')
+      return { current: false }
+    for (const candidate of bindings.values()) {
+      if (candidate.worldRef !== request.worldRef || await currentBinding(candidate.sessionRef) !== candidate)
+        continue
+      try {
+        const proof = await evidence.verifyRunningWorld(request.worldPath, request.worldRef) as Record<string, unknown>
+        if (proof?.current === true && proof.running === true
+          && proof.worldPath === request.worldPath && proof.worldRef === request.worldRef
+          && typeof proof.processRef === 'string' && proof.processRef
+          && serviceOf(host, 'hanaworldsLocalWorldProcessEvidence') === evidence
+          && await currentBinding(candidate.sessionRef) === candidate) {
+          return { current: true, action: 'BIND_RUNNING_WORLD', worldPath: request.worldPath, worldRef: request.worldRef, processRef: proof.processRef }
+        }
+      }
+      catch {
+        return { current: false }
+      }
+    }
     return { current: false }
+  },
+
+  attachCanvas(canvas: { call?: (operation: string, request: unknown) => Promise<unknown>, subscribeCanvasEvents?: (context: Record<string, unknown>, callback?: unknown) => Promise<unknown> }) {
+    if (typeof canvas?.call !== 'function')
+      return
+    const original = canvas.call
+    const originalSubscribe = canvas.subscribeCanvasEvents
+    canvas.call = function (operation, request) {
+      return canvasCalls.run(canvas, () => original.call(this, operation, request))
+    }
+    if (typeof originalSubscribe === 'function') {
+      canvas.subscribeCanvasEvents = function (context, callback) {
+        return canvasCalls.run(canvas, () => originalSubscribe.call(this, context, callback))
+      }
+    }
+    return () => {
+      if (canvas.call !== original)
+        canvas.call = original
+      if (originalSubscribe && canvas.subscribeCanvasEvents !== originalSubscribe)
+        canvas.subscribeCanvasEvents = originalSubscribe
+    }
   },
 
   clear() {
@@ -188,6 +297,37 @@ export const hanaworlds = defineService({
 function serviceOf(host: HostContext, name: string): unknown {
   const resolver = host as HostContext & { get?: (name: string) => unknown }
   return typeof resolver.get === 'function' ? resolver.get(name) : undefined
+}
+
+function activeCanvas(): object | null {
+  const canvas = canvasCalls.getStore()
+  const host = getCurrentHostInstance() as unknown as HostContext
+  return canvas && serviceOf(host, 'hanaworldsCanvasV4') === canvas ? canvas : null
+}
+
+async function currentWorldRevision(binding: Binding, request: Record<string, unknown>, operation?: string): Promise<string | null> {
+  const host = getCurrentHostInstance() as unknown as HostContext
+  const oracle = serviceOf(host, 'hanaworldsWorldRevisionOracle') as { read?: (worldRef: string) => Promise<unknown> } | undefined
+  if (typeof oracle?.read !== 'function')
+    return null
+  try {
+    const revision = await oracle.read(binding.worldRef)
+    let expectedWorldRevision = request.expectedWorldRevision
+    if (expectedWorldRevision === undefined && request.contractVersion === 'canvas/v4'
+      && ['InspectObject', 'AnalyzeAffectedObjects'].includes(operation ?? '')) {
+      expectedWorldRevision = request.expectedRevision
+    }
+    if (typeof revision !== 'string' || !revision
+      || (expectedWorldRevision !== undefined && expectedWorldRevision !== revision)
+      || await currentBinding(binding.sessionRef) !== binding
+      || serviceOf(host, 'hanaworldsWorldRevisionOracle') !== oracle) {
+      return null
+    }
+    return revision
+  }
+  catch {
+    return null
+  }
 }
 
 function grantEvidence(): GrantEvidence | null {

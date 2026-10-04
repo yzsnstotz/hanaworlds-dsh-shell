@@ -14,6 +14,9 @@ describe('dsh-tauri cordis injection', () => {
     } as never)
     root.provide('webServer', { register } as never)
     root.provide('sessions', { get: () => undefined, list: () => [] } as never)
+    const canvas = { call: async () => ({ current: false }) }
+    const originalCanvasCall = canvas.call
+    root.provide('hanaworldsCanvasV4', canvas as never)
     try {
       const fiber = root.plugin(plugin)
       await fiber.await()
@@ -21,7 +24,10 @@ describe('dsh-tauri cordis injection', () => {
       expect(root.get('hanaworldsAuthority')).toMatchObject({
         verify: expect.any(Function),
         verifyEngineBinding: expect.any(Function),
+        verifyService: expect.any(Function),
       })
+      expect(root.get('hanaworldsOperatorAuthority')).toMatchObject({ verify: expect.any(Function) })
+      expect(canvas.call).not.toBe(originalCanvasCall)
       await expect(hanaworlds.context()).resolves.toMatchObject({
         status: 'unavailable',
         sessions: [],
@@ -29,6 +35,7 @@ describe('dsh-tauri cordis injection', () => {
     }
     finally {
       await root.fiber.dispose()
+      expect(canvas.call).toBe(originalCanvasCall)
       clearHostRuntime()
     }
   })

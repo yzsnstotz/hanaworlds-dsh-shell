@@ -39,6 +39,13 @@ export function apply(ctx: HostContext): void {
     verifyEngineBinding: hanaworlds.verifyEngineBinding,
     verifyService: hanaworlds.verifyService,
   })
+  ctx.provide('hanaworldsOperatorAuthority', { verify: hanaworlds.verifyOperator })
+  ctx.inject(['hanaworldsCanvasV4'], (scoped) => {
+    const canvas = scoped.get('hanaworldsCanvasV4') as { call?: (operation: string, request: unknown) => Promise<unknown>, subscribeCanvasEvents?: (context: Record<string, unknown>, callback?: unknown) => Promise<unknown> }
+    const detach = hanaworlds.attachCanvas(canvas)
+    if (detach)
+      scoped.effect(() => detach)
+  })
   ctx.effect(() => hanaworldsRoutes(ctx), HANAWORLDS_ROUTES_EFFECT)
   ctx.effect(() => () => hanaworlds.clear(), HANAWORLDS_RUNTIME_EFFECT)
   if (process.env.DSH_TAURI_EMBEDDED === '1') {
