@@ -96,4 +96,24 @@ describe('hanaWorlds desktop host route', () => {
       await runtime.close()
     }
   })
+
+  it('returns a distinct failure when a trusted confirmation is not durable', async () => {
+    process.env.DSH_TAURI_EMBEDDED = '1'
+    process.env.HANAWORLDS_DESKTOP_TOKEN = token
+    const call = vi.spyOn(hanaworlds, 'call').mockRejectedValue(new Error('CONFIRMATION_NOT_DURABLE'))
+    const runtime = await host()
+    try {
+      const response = await fetch(`${runtime.base}/api/desktop/hanaworlds/workshop`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-hanaworlds-desktop-token': token },
+        body: JSON.stringify({ sessionRef: 'session-a', operation: 'AnswerClarification', payload: { requestId: 'answer-1' } }),
+      })
+      expect(response.status).toBe(503)
+      expect(await response.json()).toEqual({ error: 'CONFIRMATION_NOT_DURABLE' })
+      expect(call).toHaveBeenCalledOnce()
+    }
+    finally {
+      await runtime.close()
+    }
+  })
 })

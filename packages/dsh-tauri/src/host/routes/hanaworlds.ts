@@ -64,7 +64,23 @@ export const hanaworldsRoutes = defineRoutes((routes) => {
     try {
       return await hanaworlds.call(input.sessionRef, input.operation, input.payload)
     }
-    catch {
+    catch (cause) {
+      const reason = cause instanceof Error ? cause.message : ''
+      if (reason === 'CONFIRMATION_INPUT_INVALID' || reason === 'WORKSHOP_OPERATION_INVALID') {
+        event.res.status = 400
+        return { error: reason }
+      }
+      if (reason === 'CONFIRMATION_DUPLICATE' || reason === 'CONFIRMATION_CONFLICT'
+        || reason === 'SESSION_OR_GRANT_CHANGED' || reason === 'SESSION_NOT_CURRENT') {
+        event.res.status = 409
+        return { error: reason }
+      }
+      if (reason === 'SESSION_PERSISTENCE_UNAVAILABLE' || reason === 'SESSION_FLUSH_UNAVAILABLE'
+        || reason === 'SESSION_READ_INVALID' || reason === 'CONFIRMATION_NOT_DURABLE'
+        || reason === 'CONFIRMATION_WRITE_FAILED') {
+        event.res.status = 503
+        return { error: reason }
+      }
       event.res.status = 403
       return { error: 'TRUSTED_BINDING_REQUIRED' }
     }

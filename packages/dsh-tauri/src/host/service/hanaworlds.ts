@@ -1,4 +1,4 @@
-import type { HostContext, SessionId } from '../types'
+import type { HostContext, Session, SessionId, UserMessage } from '../types'
 import { randomUUID } from 'node:crypto'
 import { getCurrentHostInstance } from '../config/runtime'
 import { defineService } from './index'
@@ -26,12 +26,29 @@ interface Binding extends Grant {
   authorizationRef: string
 }
 
+interface StoredEvent {
+  type: string
+  seq: number
+  surfaceOp?: string
+  data: Record<string, unknown>
+}
+
+interface SessionPersistenceReader {
+  open: (sessionRef: SessionId, access: 'read') => Promise<{
+    read: () => Promise<{ events: StoredEvent[] }>
+    close: () => Promise<void>
+  }>
+}
+
 const bindings = new Map<string, Binding>()
+const confirmationLocks = new Map<string, Promise<void>>()
+const confirmedTurns = new Map<string, Map<string, { requestId: string, answer: string }>>()
 const allowedOperations = new Set([
   'StartOrResumeSession',
   'SwitchWorldContext',
   'AppendMultimodalTurn',
   'AnswerClarification',
+  'ReadSessionTurnDetails',
   'ListObjects',
   'SelectObjects',
   'BeginFirstBuilding',
@@ -108,11 +125,18 @@ export const hanaworlds = defineService({
     const workshop = serviceOf(host, 'hanaworldsWorkshop') as { call?: (operation: string, body: unknown) => Promise<unknown> } | undefined
     if (typeof workshop?.call !== 'function')
       throw new Error('WORKSHOP_UNAVAILABLE')
+    const workshopCall = workshop.call.bind(workshop)
     const body: Record<string, unknown> = { ...payload, actorRef: binding.actorRef, sessionRef: binding.sessionRef, authorizationRef: binding.authorizationRef }
     if (worldRefOperations.has(operation) || 'worldRef' in body)
       body.worldRef = binding.worldRef
     delete body.authorizationBinding
-    return workshop.call(operation, body)
+    if (operation === 'AnswerClarification') {
+      return withConfirmationLock(sessionRef, async () => {
+        await persistConfirmation(host, binding, body)
+        return workshopCall(operation, body)
+      })
+    }
+    return workshopCall(operation, body)
   },
 
   async verify(request: Record<string, unknown>) {
@@ -132,6 +156,7 @@ export const hanaworlds = defineService({
 
   clear() {
     bindings.clear()
+    confirmedTurns.clear()
   },
 })
 
@@ -205,4 +230,138 @@ async function bindingFor(request: Record<string, unknown>): Promise<Binding | n
     && (request.worldRef === undefined || request.worldRef === binding.worldRef)
     ? binding
     : null
+}
+
+async function withConfirmationLock<T>(sessionRef: string, action: () => Promise<T>): Promise<T> {
+  const previous = confirmationLocks.get(sessionRef)
+  let release!: () => void
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  confirmationLocks.set(sessionRef, current)
+  if (previous)
+    await previous
+  try {
+    return await action()
+  }
+  finally {
+    if (confirmationLocks.get(sessionRef) === current)
+      confirmationLocks.delete(sessionRef)
+    release()
+  }
+}
+
+async function persistConfirmation(host: HostContext, binding: Binding, body: Record<string, unknown>): Promise<void> {
+  const { requestId, answer } = body
+  if (body.contractVersion !== 'session/v2' || typeof requestId !== 'string' || !requestId
+    || typeof answer !== 'string' || typeof body.turnRef !== 'string' || !body.turnRef
+    || typeof body.clarificationId !== 'string' || !body.clarificationId
+    || typeof body.expectedRevision !== 'string' || !body.expectedRevision
+    || Object.keys(body).some(key => ![
+      'contractVersion',
+      'actorRef',
+      'sessionRef',
+      'requestId',
+      'authorizationRef',
+      'turnRef',
+      'expectedRevision',
+      'clarificationId',
+      'answer',
+    ].includes(key))) {
+    throw new Error('CONFIRMATION_INPUT_INVALID')
+  }
+  const turnKey = JSON.stringify([body.turnRef, body.clarificationId])
+  const previousConfirmation = confirmedTurns.get(binding.sessionRef)?.get(turnKey)
+  if (previousConfirmation) {
+    const exact = previousConfirmation.requestId === requestId && previousConfirmation.answer === answer
+    throw new Error(exact ? 'CONFIRMATION_DUPLICATE' : 'CONFIRMATION_CONFLICT')
+  }
+  const persistence = serviceOf(host, 'sessionPersistence') as SessionPersistenceReader | undefined
+  if (typeof persistence?.open !== 'function')
+    throw new Error('SESSION_PERSISTENCE_UNAVAILABLE')
+  const session = host.sessions.get(binding.sessionRef as SessionId)
+  if (!session)
+    throw new Error('SESSION_NOT_CURRENT')
+  const beforeSeq = session.seq
+  await assertCurrentConfirmation(host, binding, session)
+  await flushConfirmation(host, session)
+  const before = await readStoredEvents(persistence, session.id)
+  await assertCurrentConfirmation(host, binding, session, beforeSeq)
+  const duplicate = before.find(event => event.type === 'user/message' && event.data.id === requestId)
+  if (duplicate) {
+    const content = duplicate.data.content
+    const exact = duplicate.surfaceOp === 'append' && duplicate.data.role === 'user'
+      && (duplicate.data.source as { kind?: string } | undefined)?.kind === 'user'
+      && Array.isArray(content) && content.length === 1
+      && content[0]?.type === 'text' && content[0]?.text === answer
+    throw new Error(exact ? 'CONFIRMATION_DUPLICATE' : 'CONFIRMATION_CONFLICT')
+  }
+  const message: UserMessage = {
+    id: requestId as UserMessage['id'],
+    role: 'user',
+    source: { kind: 'user' },
+    content: [{ type: 'text', text: answer }],
+  }
+  let event: ReturnType<Session['append']>
+  try {
+    event = session.append('user/message', message, { surfaceOp: 'append' })
+  }
+  catch {
+    throw new Error('CONFIRMATION_WRITE_FAILED')
+  }
+  let sessionTurns = confirmedTurns.get(binding.sessionRef)
+  if (!sessionTurns) {
+    sessionTurns = new Map()
+    confirmedTurns.set(binding.sessionRef, sessionTurns)
+  }
+  sessionTurns.set(turnKey, { requestId, answer })
+  await flushConfirmation(host, session)
+  const after = await readStoredEvents(persistence, session.id)
+  const landed = after.filter(item => item.type === 'user/message' && item.data.id === requestId)
+  if (landed.length !== 1 || landed[0]?.seq !== event.seq || landed[0]?.surfaceOp !== 'append'
+    || landed[0]?.data.role !== 'user'
+    || (landed[0]?.data.source as { kind?: string } | undefined)?.kind !== 'user'
+    || !Array.isArray(landed[0]?.data.content) || landed[0]?.data.content.length !== 1
+    || landed[0]?.data.content[0]?.type !== 'text' || landed[0]?.data.content[0]?.text !== answer) {
+    throw new Error('CONFIRMATION_NOT_DURABLE')
+  }
+  await assertCurrentConfirmation(host, binding, session, (event.seq + 1) as Session['seq'])
+}
+
+async function readStoredEvents(persistence: SessionPersistenceReader, sessionRef: SessionId): Promise<StoredEvent[]> {
+  try {
+    const handle = await persistence.open(sessionRef, 'read')
+    try {
+      const result = await handle.read()
+      if (!Array.isArray(result.events))
+        throw new Error('SESSION_READ_INVALID')
+      return result.events
+    }
+    finally {
+      await handle.close()
+    }
+  }
+  catch {
+    throw new Error('SESSION_READ_INVALID')
+  }
+}
+
+async function flushConfirmation(host: HostContext, session: Session): Promise<void> {
+  let flushed: boolean
+  try {
+    flushed = await host.sessions.flush(session)
+  }
+  catch {
+    throw new Error('SESSION_FLUSH_UNAVAILABLE')
+  }
+  if (flushed !== true)
+    throw new Error('SESSION_FLUSH_UNAVAILABLE')
+}
+
+async function assertCurrentConfirmation(host: HostContext, binding: Binding, session: Session, expectedSeq?: Session['seq']): Promise<void> {
+  if (host.sessions.get(binding.sessionRef as SessionId) !== session
+    || (expectedSeq !== undefined && session.seq !== expectedSeq)
+    || await currentBinding(binding.sessionRef) !== binding) {
+    throw new Error('SESSION_OR_GRANT_CHANGED')
+  }
 }
