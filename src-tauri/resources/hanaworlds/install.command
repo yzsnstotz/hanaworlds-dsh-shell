@@ -37,6 +37,23 @@ verify_app() {
   done < <(/usr/bin/find "$app" -type l -print0)
 }
 
+verify_legacy_applet() {
+  local app="$1" executable=""
+  [ -d "$app" ] && [ ! -L "$app" ] || fail "legacy applet missing or linked"
+  [ "$(identity "$app")" = HanaWorlds ] || fail "legacy applet identity mismatch"
+  executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null)" || fail "legacy applet executable missing"
+  [ "$executable" = applet ] && [ -f "$app/Contents/Resources/Scripts/main.scpt" ] || fail "legacy applet contents invalid"
+  /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1 || fail "legacy applet signature invalid"
+}
+
+verify_replacement() {
+  if [ "$rollback_mode" = 1 ] && ! /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist" >/dev/null 2>&1; then
+    verify_legacy_applet "$1"
+  else
+    verify_app "$1"
+  fi
+}
+
 [ -d "$install_root" ] || fail "install root missing: $install_root"
 install_root="$(cd "$install_root" && pwd -P)"
 target="$install_root/HanaWorlds.app"
@@ -46,14 +63,16 @@ target="$install_root/HanaWorlds.app"
 mkdir -p "$backup_root"
 backup_root="$(cd "$backup_root" && pwd -P)"
 
+rollback_mode=0
 if [ "$candidate" = rollback ]; then
+  rollback_mode=1
   [ -f "$backup_root/last" ] || fail "no previous app backup"
   candidate="$(cat "$backup_root/last")"
 fi
 
 candidate="$(cd "$candidate" && pwd -P)"
 [ "$candidate" != "$target" ] || fail "candidate is the installed app"
-verify_app "$candidate"
+verify_replacement "$candidate"
 
 stage="$(/usr/bin/mktemp -d "$install_root/.HanaWorlds-stage.XXXXXX")"
 backup="$(/usr/bin/mktemp -d "$backup_root/previous.XXXXXX")"
@@ -68,13 +87,13 @@ cleanup() {
 trap cleanup EXIT
 
 /usr/bin/ditto "$candidate" "$stage/HanaWorlds.app"
-verify_app "$stage/HanaWorlds.app"
+verify_replacement "$stage/HanaWorlds.app"
 /usr/bin/ditto "$target" "$backup/HanaWorlds.app"
 [ "$(identity "$backup/HanaWorlds.app")" = HanaWorlds ] || fail "backup identity mismatch"
 /bin/mv "$target" "$stage/previous.app"
 swapped=1
 /bin/mv "$stage/HanaWorlds.app" "$target"
-verify_app "$target"
+verify_replacement "$target"
 swapped=0
 printf '%s\n' "$backup/HanaWorlds.app" > "$backup_root/last.tmp"
 /bin/mv "$backup_root/last.tmp" "$backup_root/last"

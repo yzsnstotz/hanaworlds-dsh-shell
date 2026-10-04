@@ -28,6 +28,18 @@ function app(dir, identity, content) {
   return bundle
 }
 
+function legacyApplet(dir) {
+  const bundle = path.join(dir, 'HanaWorlds.app')
+  const contents = path.join(bundle, 'Contents')
+  mkdirSync(path.join(contents, 'MacOS'), { recursive: true })
+  mkdirSync(path.join(contents, 'Resources', 'Scripts'), { recursive: true })
+  writeFileSync(path.join(contents, 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>applet</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>')
+  execFileSync('cp', ['/bin/echo', path.join(contents, 'MacOS', 'applet')])
+  writeFileSync(path.join(contents, 'Resources', 'Scripts', 'main.scpt'), 'old applet')
+  execFileSync('codesign', ['--force', '--sign', '-', '--identifier', 'HanaWorlds', bundle])
+  return bundle
+}
+
 test('same-application installer refuses changed identity without touching installed entry', () => {
   const scratch = mkdtempSync(path.join(tmpdir(), 'hanaworlds-installer-'))
   const installed = app(path.join(scratch, 'Applications'), 'HanaWorlds', 'old')
@@ -40,7 +52,7 @@ test('same-application installer refuses changed identity without touching insta
 
 test('same-application installer replaces only the app and can roll back', () => {
   const scratch = mkdtempSync(path.join(tmpdir(), 'hanaworlds-installer-'))
-  const installed = app(path.join(scratch, 'Applications'), 'HanaWorlds', 'old')
+  const installed = legacyApplet(path.join(scratch, 'Applications'))
   const candidate = app(path.join(scratch, 'candidate'), 'HanaWorlds', 'new')
   const backupRoot = path.join(scratch, 'backups')
   const installedData = path.join(scratch, 'data.txt')
@@ -51,7 +63,7 @@ test('same-application installer replaces only the app and can roll back', () =>
   assert.equal(readFileSync(installedData, 'utf8'), 'preserve')
   const rollback = spawnSync('bash', [installer, 'rollback', path.dirname(installed), backupRoot], { encoding: 'utf8' })
   assert.equal(rollback.status, 0, rollback.stderr)
-  assert.equal(readFileSync(path.join(installed, 'Contents/Resources/resources/node/bin/node'), 'utf8'), 'old')
+  assert.equal(readFileSync(path.join(installed, 'Contents/Resources/Scripts/main.scpt'), 'utf8'), 'old applet')
 })
 
 test('HanaWorlds product build declares the original identity and isolated data feature', () => {

@@ -60,7 +60,9 @@ done
 
 node_bin="$repo/src-tauri/resources/node/bin/node"
 pnpm_bin="$repo/src-tauri/resources/pnpm/bin/pnpm.cjs"
-export PATH="$repo/src-tauri/resources/node/bin:$PATH"
+printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$node_bin" "$pnpm_bin" > "$work/pnpm"
+chmod +x "$work/pnpm"
+export PATH="$work:$repo/src-tauri/resources/node/bin:$PATH"
 
 source_sha="$(git rev-parse HEAD)"
 build_id="$(printf '%s\n%s\n%s\n' "$source_sha" "$dsh_tag" "$(sha256 src-tauri/resources/manifest.jsonc)" | shasum -a 256 | awk '{print $1}')"
@@ -71,6 +73,8 @@ export HANAWORLDS_BUILD_ID="$build_id"
 
 candidate="src-tauri/target/release/bundle/macos/HanaWorlds.app"
 [ -d "$candidate" ] || { echo "Built HanaWorlds.app missing: $candidate" >&2; exit 1; }
+/usr/bin/codesign --force --deep --sign - --identifier HanaWorlds "$candidate"
 /usr/bin/codesign --verify --deep --strict "$candidate"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist")" = HanaWorlds ] || { echo 'Built app identity mismatch' >&2; exit 1; }
+[ "$(/usr/bin/codesign -dv --verbose=2 "$candidate" 2>&1 | sed -n 's/^Identifier=//p' | head -n 1)" = HanaWorlds ] || { echo 'Built signing identity mismatch' >&2; exit 1; }
 echo "$repo/$candidate"
