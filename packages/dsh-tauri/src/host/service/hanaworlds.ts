@@ -325,7 +325,7 @@ async function persistConfirmation(host: HostContext, binding: Binding, body: Re
     || landed[0]?.data.content[0]?.type !== 'text' || landed[0]?.data.content[0]?.text !== answer) {
     throw new Error('CONFIRMATION_NOT_DURABLE')
   }
-  await assertCurrentConfirmation(host, binding, session, (event.seq + 1) as Session['seq'])
+  await assertCurrentConfirmation(host, binding, session)
 }
 
 async function readStoredEvents(persistence: SessionPersistenceReader, sessionRef: SessionId): Promise<StoredEvent[]> {

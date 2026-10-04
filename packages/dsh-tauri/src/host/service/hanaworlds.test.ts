@@ -46,7 +46,7 @@ function host() {
 
 function confirmationHost() {
   const trace: string[] = []
-  const events: Array<{ type: string, seq: number, surfaceOp: string, data: Record<string, unknown> }> = []
+  const events: Array<{ type: string, seq: number, surfaceOp?: string, data: Record<string, unknown> }> = []
   let stored = [] as typeof events
   let flushResult = true
   let failAfterAppend = false
@@ -116,6 +116,10 @@ function confirmationHost() {
     trace,
     services,
     stored: () => stored,
+    appendTitle: () => {
+      trace.push('title')
+      events.push({ type: 'session/title', seq: events.length, data: { title: 'Current world' } })
+    },
     failFlush: () => { flushResult = false },
     failAfterAppend: () => { failAfterAppend = true },
     withholdAppend: () => { withholdAppend = true },
@@ -245,6 +249,22 @@ describe('hanaWorlds durable confirmation', () => {
     expect(runtime.calls[1]).toMatchObject({ operation: 'ReadSessionTurnDetails', body: { sessionRef: 'session-a', requestId: 'details-1' } })
   })
 
+  it('forwards a durable confirmation when Core appends a title event after it', async () => {
+    const runtime = confirmationHost()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    runtime.onFlush(() => {
+      if (runtime.trace.includes('append'))
+        runtime.appendTitle()
+    })
+    await expect(hanaworlds.call('session-a', 'AnswerClarification', confirmation)).resolves.toEqual({ ok: true })
+    expect(runtime.stored()).toMatchObject([
+      { type: 'user/message', seq: 0, data: { id: 'answer-1', content: [{ type: 'text', text: '确认' }] } },
+      { type: 'session/title', seq: 1, data: { title: 'Current world' } },
+    ])
+    expect(runtime.calls).toHaveLength(1)
+    expect(runtime.trace).toEqual(['flush', 'append', 'flush', 'title', 'workshop'])
+  })
+
   it('rejects duplicate and inconsistent request IDs before calling Workshop again', async () => {
     const runtime = confirmationHost()
     await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
@@ -341,6 +361,18 @@ describe('hanaWorlds durable confirmation', () => {
     runtime.regrant()
     await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
     await expect(hanaworlds.call('session-a', 'AnswerClarification', confirmation)).rejects.toThrow('CONFIRMATION_DUPLICATE')
+    expect(runtime.stored()).toHaveLength(1)
+    expect(runtime.calls).toHaveLength(0)
+  })
+
+  it('does not forward a durable confirmation when the live Session switches after flush', async () => {
+    const runtime = confirmationHost()
+    await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
+    runtime.onFlush(() => {
+      if (runtime.trace.includes('append'))
+        runtime.switchSession()
+    })
+    await expect(hanaworlds.call('session-a', 'AnswerClarification', confirmation)).rejects.toThrow('SESSION_OR_GRANT_CHANGED')
     expect(runtime.stored()).toHaveLength(1)
     expect(runtime.calls).toHaveLength(0)
   })
