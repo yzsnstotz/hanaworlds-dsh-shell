@@ -41,7 +41,7 @@ export function apply(ctx: HostContext): void {
   })
   ctx.provide('hanaworldsOperatorAuthority', { verify: hanaworlds.verifyOperator })
   ctx.inject(['hanaworldsCanvasV4'], (scoped) => {
-    const canvas = scoped.get('hanaworldsCanvasV4') as { call?: (operation: string, request: unknown) => Promise<unknown>, subscribeCanvasEvents?: (context: Record<string, unknown>, callback?: unknown) => Promise<unknown> }
+    const canvas = scoped.get('hanaworldsCanvasV4') as { call?: (operation: string, request: unknown) => Promise<unknown>, subscribeCanvasEvents?: (context: Record<string, unknown>, callback?: unknown) => Promise<unknown>, recoverPending?: (...arguments_: unknown[]) => Promise<unknown> }
     const detach = hanaworlds.attachCanvas(canvas)
     if (detach)
       scoped.effect(() => detach)

@@ -11,6 +11,7 @@ function host() {
   let currentGrant = { ...firstGrant }
   let online = true
   let worldRevision = 'world-rev-1'
+  let recoveryRequest: Record<string, unknown> | null = null
   const calls: Array<{ operation: string, body: Record<string, unknown> }> = []
   const services: Record<string, unknown> = {
     hanaworldsWorldRevisionOracle: { read: async () => worldRevision },
@@ -27,6 +28,11 @@ function host() {
     },
   }
   const canvas = {
+    recoverPending: async (...arguments_: unknown[]) => {
+      if (arguments_.length || !recoveryRequest)
+        return { current: false }
+      return hanaworlds.verifyService(recoveryRequest, 'RestoreTransaction')
+    },
     subscribeCanvasEvents: async (request: Record<string, unknown>) => hanaworlds.verify({ ...request, contractVersion: 'canvas/v4' }, 'ListObjects'),
     call: async (operation: string, raw: unknown) => {
       const request = raw as Record<string, unknown>
@@ -59,6 +65,7 @@ function host() {
       currentGrant = { ...firstGrant, grantRef: 'grant-b' }
     },
     revise: (revision: string) => { worldRevision = revision },
+    setRecoveryRequest: (request: Record<string, unknown>) => { recoveryRequest = request },
   }
 }
 
@@ -135,19 +142,46 @@ describe('hanaWorlds Canvas authority', () => {
     await expect(runtime.canvas.call('APPLY_RECOVERABLE', { ...body, actorRef: 'hanaworlds-canvas', authorizationBinding: { actorRef: 'luanti:player-a' }, contractVersion: 'world-adapter/v4' })).resolves.toEqual({ current: false })
   })
 
-  it('grants exact service recovery operations only during the current Canvas call', async () => {
+  it('limits service recovery to Canvas durable pending entrypoint after grant withdrawal', async () => {
     const runtime = host()
     await hanaworlds.bind('session-a', firstGrant.worldRef, firstGrant.engineActorName)
     await hanaworlds.call('session-a', 'StartOrResumeSession', {})
     const body = runtime.calls[0]!.body
-    const request = { ...body, actorRef: 'hanaworlds-canvas', transactionId: 'tx-1', contractVersion: 'world-adapter/v4' }
+    const request = { contractVersion: 'world-adapter/v4', actorRef: 'hanaworlds-canvas', sessionRef: body.sessionRef, authorizationRef: body.authorizationRef, worldRef: firstGrant.worldRef, requestId: 'recover-1', originTransactionId: 'tx-1', operationDigest: 'a'.repeat(64), beforeImageDigest: 'b'.repeat(64), restoreAttemptIdentity: 'c'.repeat(64), guarantee: 'RECOVERABLE_VERIFIED' }
+    runtime.setRecoveryRequest(request)
     await expect(hanaworlds.verifyService(request, 'RestoreTransaction')).resolves.toEqual({ current: false })
-    await expect(runtime.canvas.call('RestoreTransaction', request)).resolves.toMatchObject({ current: true, domainOwner: 'hanaworlds-canvas', worldRef: firstGrant.worldRef })
-    await expect(runtime.canvas.call('AbortPreparedTransaction', request)).resolves.toMatchObject({ current: true, allowedActions: ['AbortPreparedTransaction'] })
-    await expect(runtime.canvas.call('RestoreTransaction', { ...request, transactionId: '' })).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('RestoreTransaction', request)).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.recoverPending()).resolves.toMatchObject({ current: true, domainOwner: 'hanaworlds-canvas', worldRef: firstGrant.worldRef, sessionRef: 'session-a', authorizationRef: body.authorizationRef, allowedActions: ['RestoreTransaction'] })
+    await expect(runtime.canvas.recoverPending('tx-forged')).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('AbortPreparedTransaction', { ...request, transactionId: 'tx-1' })).resolves.toMatchObject({ current: true, allowedActions: ['AbortPreparedTransaction'] })
     await expect(hanaworlds.verifyService(request, 'InspectRegion')).resolves.toEqual({ current: false })
     runtime.revoke()
+    await expect(runtime.canvas.call('ApplyRecoverableCommit', { ...body, contractVersion: 'canvas/v4' })).resolves.toEqual({ current: false })
     await expect(runtime.canvas.call('RestoreTransaction', request)).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.call('AbortPreparedTransaction', { ...request, transactionId: 'tx-1' })).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.recoverPending()).resolves.toMatchObject({ current: true, domainOwner: 'hanaworlds-canvas', worldRef: firstGrant.worldRef, sessionRef: 'session-a', authorizationRef: body.authorizationRef, allowedActions: ['RestoreTransaction'] })
+    for (const invalid of [
+      { actorRef: 'browser' },
+      { worldRef: '' },
+      { originTransactionId: '' },
+      { sessionRef: '' },
+      { authorizationRef: '' },
+      { operationDigest: 'wrong' },
+      { beforeImageDigest: 'wrong' },
+      { restoreAttemptIdentity: 'wrong' },
+      { domainOwner: 'hanaworlds-canvas' },
+    ]) {
+      runtime.setRecoveryRequest({ ...request, ...invalid })
+      await expect(runtime.canvas.recoverPending()).resolves.toEqual({ current: false })
+    }
+    runtime.setRecoveryRequest(request)
+    runtime.regrant()
+    await expect(runtime.canvas.call('ApplyRecoverableCommit', { ...body, contractVersion: 'canvas/v4' })).resolves.toEqual({ current: false })
+    await expect(runtime.canvas.recoverPending()).resolves.toMatchObject({ current: true, authorizationRef: body.authorizationRef })
+    runtime.sessions.delete('session-a')
+    await expect(runtime.canvas.recoverPending()).resolves.toMatchObject({ current: true, sessionRef: 'session-a', authorizationRef: body.authorizationRef })
+    runtime.services.hanaworldsCanvasV4 = { ...runtime.canvas }
+    await expect(runtime.canvas.recoverPending()).resolves.toEqual({ current: false })
   })
 
   it('rejects a Canvas provider withdrawn during world revision lookup', async () => {

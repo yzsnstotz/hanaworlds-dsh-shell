@@ -47,10 +47,12 @@ const bindings = new Map<string, Binding>()
 const confirmationLocks = new Map<string, Promise<void>>()
 const confirmedTurns = new Map<string, Map<string, { requestId: string, answer: string }>>()
 const canvasCalls = new AsyncLocalStorage<object>()
+const canvasRecoveryCalls = new AsyncLocalStorage<object>()
 const canvasOperations = new Set(['ListWorldConnections', 'SelectWorldConnection', 'SwitchWorldConnection', 'ListObjects', 'CreateObject', 'NameObject', 'RenameObject', 'SetObjectSelection', 'InspectObject', 'AnalyzeAffectedObjects', 'DecideAffectedObjectNotification', 'ApplyRecoverableCommit', 'Readback', 'Undo', 'Redo', 'HistoryQuery', 'InspectPlacementRegion'])
 const adapterOperations = new Set(['DiscoverConnections', 'ListWorlds', 'AuthorizeBinding', 'InspectWorld', 'PrepareRecoverableTransaction', 'ApplyCompiledTransaction', 'Readback', 'QueryTransaction', 'QueryPreparedTransaction', 'PrepareHistoryTransaction', 'QueryPreparedHistoryTransaction', 'ApplyHistoryTransaction', 'InspectRegion'])
 const engineActions = new Set(['APPLY_RECOVERABLE', 'INSPECT', 'READBACK', 'HISTORY', 'UNDO', 'REDO'])
 const serviceOperations = new Set(['RestoreTransaction', 'AbortPreparedTransaction', 'AbortPreparedHistoryTransaction'])
+const recoveryFields = new Set(['contractVersion', 'actorRef', 'sessionRef', 'authorizationRef', 'worldRef', 'requestId', 'originTransactionId', 'operationDigest', 'beforeImageDigest', 'restoreAttemptIdentity', 'guarantee'])
 const workshopActions = new Map<string, string>([
   ['StartOrResumeSession', 'READ'],
   ['SwitchWorldContext', 'SELECT'],
@@ -224,9 +226,20 @@ export const hanaworlds = defineService({
 
   async verifyService(request: Record<string, unknown>, operation?: string) {
     if (request?.contractVersion !== 'world-adapter/v4' || request.actorRef !== 'hanaworlds-canvas'
-      || !serviceOperations.has(operation ?? '') || typeof request.transactionId !== 'string' || !request.transactionId) {
+      || !serviceOperations.has(operation ?? '')) {
       return { current: false }
     }
+    if (operation === 'RestoreTransaction') {
+      const canvas = canvasRecoveryCalls.getStore()
+      const host = getCurrentHostInstance() as unknown as HostContext
+      if (!canvas || serviceOf(host, 'hanaworldsCanvasV4') !== canvas
+        || !validRecoveryRequest(request)) {
+        return { current: false }
+      }
+      return { current: true, actorRef: 'hanaworlds-canvas', sessionRef: request.sessionRef, worldRef: request.worldRef, authorizationRef: request.authorizationRef, domainOwner: 'hanaworlds-canvas', allowedActions: ['RestoreTransaction'] }
+    }
+    if (typeof request.transactionId !== 'string' || !request.transactionId)
+      return { current: false }
     const canvas = activeCanvas()
     const binding = await bindingFor(request)
     if (!binding || !canvas) {
@@ -267,11 +280,12 @@ export const hanaworlds = defineService({
     return { current: false }
   },
 
-  attachCanvas(canvas: { call?: (operation: string, request: unknown) => Promise<unknown>, subscribeCanvasEvents?: (context: Record<string, unknown>, callback?: unknown) => Promise<unknown> }) {
+  attachCanvas(canvas: { call?: (operation: string, request: unknown) => Promise<unknown>, subscribeCanvasEvents?: (context: Record<string, unknown>, callback?: unknown) => Promise<unknown>, recoverPending?: (...arguments_: unknown[]) => Promise<unknown> }) {
     if (typeof canvas?.call !== 'function')
       return
     const original = canvas.call
     const originalSubscribe = canvas.subscribeCanvasEvents
+    const originalRecover = canvas.recoverPending
     canvas.call = function (operation, request) {
       return canvasCalls.run(canvas, () => original.call(this, operation, request))
     }
@@ -280,11 +294,18 @@ export const hanaworlds = defineService({
         return canvasCalls.run(canvas, () => originalSubscribe.call(this, context, callback))
       }
     }
+    if (typeof originalRecover === 'function') {
+      canvas.recoverPending = function (...arguments_) {
+        return canvasRecoveryCalls.run(canvas, () => originalRecover.apply(this, arguments_))
+      }
+    }
     return () => {
       if (canvas.call !== original)
         canvas.call = original
       if (originalSubscribe && canvas.subscribeCanvasEvents !== originalSubscribe)
         canvas.subscribeCanvasEvents = originalSubscribe
+      if (originalRecover && canvas.recoverPending !== originalRecover)
+        canvas.recoverPending = originalRecover
     }
   },
 
@@ -303,6 +324,17 @@ function activeCanvas(): object | null {
   const canvas = canvasCalls.getStore()
   const host = getCurrentHostInstance() as unknown as HostContext
   return canvas && serviceOf(host, 'hanaworldsCanvasV4') === canvas ? canvas : null
+}
+
+function validRecoveryRequest(request: Record<string, unknown>): boolean {
+  const ref = (value: unknown) => typeof value === 'string' && value.length > 0
+  const digest = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+  return Object.keys(request).length === recoveryFields.size
+    && Object.keys(request).every(key => recoveryFields.has(key))
+    && ref(request.sessionRef) && ref(request.authorizationRef) && ref(request.worldRef)
+    && ref(request.requestId) && ref(request.originTransactionId)
+    && digest(request.operationDigest) && digest(request.beforeImageDigest)
+    && digest(request.restoreAttemptIdentity) && request.guarantee === 'RECOVERABLE_VERIFIED'
 }
 
 async function currentWorldRevision(binding: Binding, request: Record<string, unknown>, operation?: string): Promise<string | null> {
