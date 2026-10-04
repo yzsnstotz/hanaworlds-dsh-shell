@@ -110,6 +110,14 @@ fn webview_data_directory(app: &tauri::AppHandle<Wry>) -> std::path::PathBuf {
 
 /// setup app
 pub fn setup(app_handle: tauri::AppHandle) {
+    #[cfg(all(target_os = "macos", feature = "hanaworlds-product"))]
+    if let Err(error) = crate::service::hanaworlds_product::prepare(&app_handle) {
+        crate::config::update_store_dat_setting(&app_handle, |setting| {
+            setting.installed = false;
+        });
+        log::error!("HanaWorlds product runtime is unavailable: {error}");
+        return;
+    }
     // 升级清理：内置插件已迁至 resources/node_modules（pnpm deploy 产物）；旧安装
     // 可能残留 resources/preset-plugins 与 resources/internal-plugins 目录。仅删除
     // 旧目录，失败告警并继续启动（查找回退见 preset::find_bundled_in_root）。

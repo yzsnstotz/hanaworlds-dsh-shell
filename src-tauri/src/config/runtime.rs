@@ -253,6 +253,10 @@ pub fn get_node_binary_path(app_handle: &tauri::AppHandle) -> PathBuf {
     ));
     let bundled = bundled_node_binary(app_handle);
 
+    if cfg!(feature = "hanaworlds-product") {
+        return bundled.clone().unwrap_or_else(|| target.clone());
+    }
+
     if prefer_bundled_node_runtime() {
         if let Some(bundled) = bundled.clone() {
             log::debug!(
@@ -486,6 +490,13 @@ fn user_home_dir() -> Option<PathBuf> {
 /// - debug 子进程由 launch 显式收到同一个 `~/.dsh.dev`，开发版与生产版的会话、档案、
 ///   插件与主题因此互不干扰。
 pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
+    if cfg!(feature = "hanaworlds-product") {
+        return _app_handle
+            .path()
+            .home_dir()
+            .expect("Failed to resolve HanaWorlds home directory")
+            .join(".hanaworlds");
+    }
     let dir_name = if cfg!(debug_assertions) {
         DSH_HOME_DEV_DIR_NAME
     } else {

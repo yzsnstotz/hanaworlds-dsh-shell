@@ -446,6 +446,9 @@ fn ensure_desktop_profile_with_root(profiles_root: &Path) -> Result<(), String> 
 /// 幂等 + 最佳努力：首次安装走 `desktop_profile_ready` 标记，改名路径靠
 /// 「旧目录/旧名是否还在」判定；任何一步失败只告警，绝不阻断启动。
 pub fn migrate_desktop_profile_name(app_handle: &AppHandle) {
+    if cfg!(feature = "hanaworlds-product") {
+        return;
+    }
     let profiles_root = config::get_dsh_data_path(app_handle).join("profiles");
     migrate_desktop_profile_in_root(app_handle, &profiles_root);
 

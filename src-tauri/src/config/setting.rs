@@ -102,11 +102,17 @@ pub fn normalize_harness_max_heap_mb(value: Option<u32>) -> Option<u32> {
 
 /// 默认档案：桌面端内置的 web 档案
 fn default_active_profile() -> String {
+    if cfg!(feature = "hanaworlds-product") {
+        return "hanaworlds".to_string();
+    }
     "web".to_string()
 }
 
 /// 命令行集成默认开启（开发者工具场景，安装完成即可用）
 fn default_cli_link_enabled() -> bool {
+    if cfg!(feature = "hanaworlds-product") {
+        return false;
+    }
     true
 }
 
@@ -162,6 +168,9 @@ fn normalize_backup_fields(setting: &mut Setting) {
 
 /// 默认服务端口：debug 构建与生产隔离，避免开发时与已运行的桌面端争用 3080。
 pub fn default_port() -> u16 {
+    if cfg!(feature = "hanaworlds-product") {
+        return 34600;
+    }
     if cfg!(debug_assertions) {
         DSH_DEV_PORT
     } else {
@@ -428,6 +437,15 @@ mod tests {
         resolve_store_dat_file, Setting, STORE_DAT_DEV_FILE, STORE_DAT_FILE, STORE_DAT_TEST_FILE,
         STORE_SETTING_KEY, ZOOM_FACTOR_MAX, ZOOM_FACTOR_MIN,
     };
+
+    #[cfg(feature = "hanaworlds-product")]
+    #[test]
+    fn hanaworlds_defaults_reuse_the_existing_profile_without_desktop_cli_links() {
+        let setting = Setting::default();
+        assert_eq!(setting.active_profile, "hanaworlds");
+        assert_eq!(setting.port, 34600);
+        assert!(!setting.cli_link_enabled);
+    }
 
     /// 启动前读取跑在 `logger::init()` 之前，任何损坏输入都只能静默回落到关闭。
     #[test]

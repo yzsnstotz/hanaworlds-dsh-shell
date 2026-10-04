@@ -18,6 +18,18 @@ pub struct DesktopAboutInfo {
 /// 关于信息：版本来自编译常量，发布时间每次实时查询最新 Release（不缓存），
 /// 查询失败则留空、不影响展示。
 pub async fn about() -> DesktopAboutInfo {
+    if cfg!(feature = "hanaworlds-product") {
+        let source = option_env!("HANAWORLDS_BUILD_ID")
+            .and_then(|id| id.get(..12))
+            .unwrap_or("unverified");
+        return DesktopAboutInfo {
+            version: format!("{} · {}", current_version(), source),
+            published_at: String::new(),
+            copyright: "Copyright © 2026 HanaWorlds contributors".to_string(),
+            repo: "https://github.com/yzsnstotz/hanaworlds-dsh-shell".to_string(),
+            powered_by: "HanaWorlds Shell · bundled runtime".to_string(),
+        };
+    }
     let published_at = fetch_releases_meta()
         .await
         .ok()

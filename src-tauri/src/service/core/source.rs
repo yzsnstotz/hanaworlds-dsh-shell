@@ -118,6 +118,9 @@ fn warn_unsupported_local_core(version: &str, baseline: Option<&str>) {
 /// 组成部分，装上也无法加载，只会把启动卡在插件阶段（issue #596）。持久化的
 /// `active_core` 设置不改写——用户升级本地核心后自动恢复「本地优先」。
 pub fn active_source(app_handle: &AppHandle) -> CoreSource {
+    if cfg!(feature = "hanaworlds-product") {
+        return CoreSource::App;
+    }
     let setting = config::get_store_dat_setting(app_handle);
     let local = local_core(app_handle);
     let baseline = config::manifest::minimum_dsh_version(app_handle);

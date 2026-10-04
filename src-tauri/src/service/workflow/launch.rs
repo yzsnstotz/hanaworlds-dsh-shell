@@ -313,6 +313,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 窗口等配置端口回落为空闲，再决定是否真的逐级递增。
     wait_for_port_release(setting.port).await;
     let available_port = find_available_port(setting.port)?;
+    if cfg!(feature = "hanaworlds-product") && available_port != setting.port {
+        return Err(format!(
+            "HANAWORLDS_PORT_IN_USE: {} is occupied; stop the previous HanaWorlds client before opening the upgraded app",
+            setting.port
+        ));
+    }
     if available_port != setting.port {
         log::info!(
             "Harness port changed from {} to {} because the configured port is occupied",
